@@ -64,6 +64,49 @@ class Database:
             )
         ''')
         
+        # Groups table
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS groups (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                description TEXT,
+                created_by INTEGER,
+                group_key TEXT NOT NULL,
+                max_members INTEGER DEFAULT 50,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (created_by) REFERENCES users (id)
+            )
+        ''')
+        
+        # Group members table
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS group_members (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                group_id INTEGER,
+                user_id INTEGER,
+                role TEXT DEFAULT 'member',
+                joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (group_id) REFERENCES groups (id),
+                FOREIGN KEY (user_id) REFERENCES users (id),
+                UNIQUE(group_id, user_id)
+            )
+        ''')
+        
+        # Group messages table
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS group_messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                group_id INTEGER,
+                sender_id INTEGER,
+                encrypted_content TEXT NOT NULL,
+                nonce TEXT NOT NULL,
+                message_number INTEGER,
+                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (group_id) REFERENCES groups (id),
+                FOREIGN KEY (sender_id) REFERENCES users (id)
+            )
+        ''')
+        
         conn.commit()
         conn.close()
     
@@ -267,3 +310,252 @@ class Database:
             'username': user[1],
             'created_at': user[2]
         } for user in users] 
+    
+    def create_group(self, name: str, description: str, created_by: int, group_key: str) -> Optional[int]:
+        """Create a new group"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            cursor.execute('''
+                INSERT INTO groups (name, description, created_by, group_key)
+                VALUES (?, ?, ?, ?)
+            ''', (name, description, created_by, group_key))
+            
+            group_id = cursor.lastrowid
+            
+            # Add creator as admin
+            cursor.execute('''
+                INSERT INTO group_members (group_id, user_id, role)
+                VALUES (?, ?, 'admin')
+            ''', (group_id, created_by))
+            
+            conn.commit()
+            conn.close()
+            return group_id
+        except sqlite3.IntegrityError:
+            conn.close()
+            return None
+    
+    def join_group(self, group_id: int, user_id: int) -> bool:
+        """Add user to group"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            # Check if group exists and has space
+            cursor.execute('SELECT max_members FROM groups WHERE id = ?', (group_id,))
+            group_info = cursor.fetchone()
+            if not group_info:
+                conn.close()
+                return False
+            
+            # Check current member count
+            cursor.execute('SELECT COUNT(*) FROM group_members WHERE group_id = ?', (group_id,))
+            member_count = cursor.fetchone()[0]
+            
+            if member_count >= group_info[0]:
+                conn.close()
+                return False
+            
+            cursor.execute('''
+                INSERT INTO group_members (group_id, user_id, role)
+                VALUES (?, ?, 'member')
+            ''', (group_id, user_id))
+            
+            conn.commit()
+            conn.close()
+            return True
+        except sqlite3.IntegrityError:
+            conn.close()
+            return False
+    
+    def leave_group(self, group_id: int, user_id: int) -> bool:
+        """Remove user from group"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            cursor.execute('''
+                DELETE FROM group_members 
+                WHERE group_id = ? AND user_id = ?
+            ''', (group_id, user_id))
+            
+            affected_rows = cursor.rowcount
+            conn.commit()
+            conn.close()
+            return affected_rows > 0
+        except Exception:
+            conn.close()
+            return False
+    
+    def get_user_groups(self, user_id: int) -> List[Dict]:
+        """Get all groups a user is member of"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            SELECT g.*, gm.role, gm.joined_at, u.username as creator_name,
+                   (SELECT COUNT(*) FROM group_members WHERE group_id = g.id) as member_count
+            FROM groups g
+            JOIN group_members gm ON g.id = gm.group_id
+            JOIN users u ON g.created_by = u.id
+            WHERE gm.user_id = ?
+            ORDER BY gm.joined_at DESC
+        ''', (user_id,))
+        
+        groups = cursor.fetchall()
+        conn.close()
+        
+        return [{
+            'id': group[0],
+            'name': group[1],
+            'description': group[2],
+            'created_by': group[3],
+            'group_key': group[4],
+            'max_members': group[5],
+            'created_at': group[6],
+            'role': group[7],
+            'joined_at': group[8],
+            'creator_name': group[9],
+            'member_count': group[10]
+        } for group in groups]
+    
+    def get_group_by_id(self, group_id: int) -> Optional[Dict]:
+        """Get group information by ID"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            SELECT g.*, u.username as creator_name,
+                   (SELECT COUNT(*) FROM group_members WHERE group_id = g.id) as member_count
+            FROM groups g
+            JOIN users u ON g.created_by = u.id
+            WHERE g.id = ?
+        ''', (group_id,))
+        
+        group = cursor.fetchone()
+        conn.close()
+        
+        if group:
+            return {
+                'id': group[0],
+                'name': group[1],
+                'description': group[2],
+                'created_by': group[3],
+                'group_key': group[4],
+                'max_members': group[5],
+                'created_at': group[6],
+                'creator_name': group[7],
+                'member_count': group[8]
+            }
+        return None
+    
+    def get_group_members(self, group_id: int) -> List[Dict]:
+        """Get all members of a group"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            SELECT u.id, u.username, gm.role, gm.joined_at
+            FROM group_members gm
+            JOIN users u ON gm.user_id = u.id
+            WHERE gm.group_id = ?
+            ORDER BY gm.joined_at ASC
+        ''', (group_id,))
+        
+        members = cursor.fetchall()
+        conn.close()
+        
+        return [{
+            'user_id': member[0],
+            'username': member[1],
+            'role': member[2],
+            'joined_at': member[3]
+        } for member in members]
+    
+    def is_group_member(self, group_id: int, user_id: int) -> bool:
+        """Check if user is member of group"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            SELECT 1 FROM group_members 
+            WHERE group_id = ? AND user_id = ?
+        ''', (group_id, user_id))
+        
+        result = cursor.fetchone()
+        conn.close()
+        return result is not None
+    
+    def store_group_message(self, group_id: int, sender_id: int, encrypted_content: str,
+                           nonce: str, message_number: int):
+        """Store encrypted group message"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            INSERT INTO group_messages (group_id, sender_id, encrypted_content, nonce, message_number)
+            VALUES (?, ?, ?, ?, ?)
+        ''', (group_id, sender_id, encrypted_content, nonce, message_number))
+        
+        conn.commit()
+        conn.close()
+    
+    def get_group_messages(self, group_id: int, limit: int = 50) -> List[Dict]:
+        """Get recent messages from a group"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            SELECT gm.*, u.username as sender_username
+            FROM group_messages gm
+            JOIN users u ON gm.sender_id = u.id
+            WHERE gm.group_id = ?
+            ORDER BY gm.timestamp DESC
+            LIMIT ?
+        ''', (group_id, limit))
+        
+        messages = cursor.fetchall()
+        conn.close()
+        
+        return [{
+            'id': msg[0],
+            'group_id': msg[1],
+            'sender_id': msg[2],
+            'encrypted_content': msg[3],
+            'nonce': msg[4],
+            'message_number': msg[5],
+            'timestamp': msg[6],
+            'sender_username': msg[7]
+        } for msg in reversed(messages)]
+    
+    def search_groups(self, query: str, limit: int = 10) -> List[Dict]:
+        """Search for groups by name"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            SELECT g.*, u.username as creator_name,
+                   (SELECT COUNT(*) FROM group_members WHERE group_id = g.id) as member_count
+            FROM groups g
+            JOIN users u ON g.created_by = u.id
+            WHERE g.name LIKE ?
+            ORDER BY g.created_at DESC
+            LIMIT ?
+        ''', (f'%{query}%', limit))
+        
+        groups = cursor.fetchall()
+        conn.close()
+        
+        return [{
+            'id': group[0],
+            'name': group[1],
+            'description': group[2],
+            'created_by': group[3],
+            'group_key': group[4],
+            'max_members': group[5],
+            'created_at': group[6],
+            'creator_name': group[7],
+            'member_count': group[8]
+        } for group in groups] 

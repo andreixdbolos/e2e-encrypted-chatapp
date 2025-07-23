@@ -25,6 +25,10 @@ class CryptoCore:
         self.chain_key = None
         self.message_number = 0
         
+        # Group encryption support
+        self.group_keys = {}  # group_id -> group_key
+        self.group_message_numbers = {}  # group_id -> message_number
+    
     def generate_identity_keypair(self) -> Tuple[bytes, bytes]:
         """Generate Curve25519 identity key pair"""
         private_key = x25519.X25519PrivateKey.generate()
@@ -160,3 +164,85 @@ class CryptoCore:
         # Update legacy fields for compatibility
         self.chain_key = root_key
         self.message_number = 0 
+    
+    def generate_group_key(self) -> bytes:
+        """Generate a new group encryption key"""
+        return secrets.token_bytes(32)
+    
+    def add_group_key(self, group_id: int, group_key: bytes):
+        """Add or update group key"""
+        self.group_keys[group_id] = group_key
+        if group_id not in self.group_message_numbers:
+            self.group_message_numbers[group_id] = 0
+    
+    def remove_group_key(self, group_id: int):
+        """Remove group key when leaving group"""
+        if group_id in self.group_keys:
+            del self.group_keys[group_id]
+        if group_id in self.group_message_numbers:
+            del self.group_message_numbers[group_id]
+    
+    def encrypt_group_message(self, group_id: int, plaintext: str, associated_data: bytes = b'') -> Dict:
+        """Encrypt message for group using shared group key"""
+        if group_id not in self.group_keys:
+            raise ValueError(f"Group key not found for group {group_id}")
+        
+        group_key = self.group_keys[group_id]
+        message_number = self.group_message_numbers[group_id]
+        
+        # Derive message key from group key and message number
+        message_key = self._derive_group_message_key(group_key, message_number)
+        
+        # Encrypt with ChaCha20-Poly1305
+        cipher = ChaCha20Poly1305(message_key)
+        nonce = secrets.token_bytes(12)
+        ciphertext = cipher.encrypt(nonce, plaintext.encode(), associated_data)
+        
+        # Increment message number for this group
+        self.group_message_numbers[group_id] += 1
+        
+        return {
+            'ciphertext': base64.b64encode(ciphertext).decode(),
+            'nonce': base64.b64encode(nonce).decode(),
+            'message_number': message_number,
+            'group_id': group_id
+        }
+    
+    def decrypt_group_message(self, encrypted_data: Dict, associated_data: bytes = b'') -> str:
+        """Decrypt group message using shared group key"""
+        group_id = encrypted_data['group_id']
+        
+        if group_id not in self.group_keys:
+            raise ValueError(f"Group key not found for group {group_id}")
+        
+        group_key = self.group_keys[group_id]
+        ciphertext = base64.b64decode(encrypted_data['ciphertext'])
+        nonce = base64.b64decode(encrypted_data['nonce'])
+        message_number = encrypted_data['message_number']
+        
+        # Derive message key from group key and message number
+        message_key = self._derive_group_message_key(group_key, message_number)
+        
+        # Decrypt
+        cipher = ChaCha20Poly1305(message_key)
+        plaintext = cipher.decrypt(nonce, ciphertext, associated_data)
+        
+        return plaintext.decode()
+    
+    def _derive_group_message_key(self, group_key: bytes, message_number: int) -> bytes:
+        """Derive message key from group key and message number"""
+        hkdf = HKDF(
+            algorithm=hashes.SHA256(),
+            length=32,
+            salt=message_number.to_bytes(4, 'big'),
+            info=b'SecureChat-GroupMessageKey',
+        )
+        return hkdf.derive(group_key)
+    
+    def get_group_keys(self) -> Dict[int, bytes]:
+        """Get all group keys (for debugging/testing)"""
+        return self.group_keys.copy()
+    
+    def has_group_key(self, group_id: int) -> bool:
+        """Check if we have the key for a specific group"""
+        return group_id in self.group_keys 

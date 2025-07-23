@@ -48,6 +48,11 @@ class SecureChatClient:
         # Chat requests
         self.pending_requests = {}  # {requester: request_data}
         
+        # Group state
+        self.user_groups = []  # List of groups user is member of
+        self.current_group = None  # Currently active group for messaging
+        self.group_members = {}  # group_id -> list of members
+        
         # Socket.IO client
         self.sio = socketio.Client()
         self.setup_socketio_handlers()
@@ -104,14 +109,20 @@ class SecureChatClient:
         self.notebook.add(self.chat_frame, text="💬 Chat")
         self.setup_chat_ui()
         
+        # Groups tab
+        self.groups_frame = tk.Frame(self.notebook, bg='#2c3e50')
+        self.notebook.add(self.groups_frame, text="👥 Groups")
+        self.setup_groups_ui()
+        
         # Security tab
         self.security_frame = tk.Frame(self.notebook, bg='#34495e')
         self.notebook.add(self.security_frame, text="🔒 Security")
         self.setup_security_ui()
         
-        # Initially disable chat and security tabs
+        # Initially disable chat, groups and security tabs
         self.notebook.tab(1, state='disabled')
         self.notebook.tab(2, state='disabled')
+        self.notebook.tab(3, state='disabled')
     
     def setup_auth_ui(self):
         """Setup authentication interface with modern design"""
@@ -345,6 +356,11 @@ class SecureChatClient:
                 # Clear message history
                 self.message_history.clear()
                 
+                # Clear group state
+                self.user_groups.clear()
+                self.current_group = None
+                self.group_members.clear()
+                
                 # Reset crypto state
                 self.crypto = CryptoCore()
                 
@@ -355,11 +371,36 @@ class SecureChatClient:
                 self.register_password_entry.delete(0, tk.END)
                 self.partner_entry.delete(0, tk.END)
                 self.message_entry.delete(0, tk.END)
+                self.group_message_entry.delete(0, tk.END)
                 
                 # Clear messages display
                 self.messages_text.config(state=tk.NORMAL)
                 self.messages_text.delete(1.0, tk.END)
                 self.messages_text.config(state=tk.DISABLED)
+                
+                # Clear group messages display
+                self.group_messages_text.config(state=tk.NORMAL)
+                self.group_messages_text.delete(1.0, tk.END)
+                self.group_messages_text.config(state=tk.DISABLED)
+                
+                # Reset groups UI
+                for widget in self.groups_scrollable_frame.winfo_children():
+                    widget.destroy()
+                
+                self.no_groups_label = tk.Label(self.groups_scrollable_frame, 
+                                               text="No groups yet\nCreate or join a group to start!", 
+                                               font=('Helvetica', 11),
+                                               fg='#95a5a6', bg='#1a252f',
+                                               justify='center')
+                self.no_groups_label.pack(pady=50)
+                
+                # Reset group UI controls
+                self.group_info_label.config(text="💬 Select a group to start chatting")
+                self.group_status_label.config(text="No group selected", fg='#95a5a6')
+                self.group_message_entry.config(state='disabled')
+                self.group_send_btn.config(state='disabled')
+                self.members_btn.config(state='disabled')
+                self.leave_group_btn.config(state='disabled')
                 
                 # Reset chat requests UI
                 for widget in self.requests_container.winfo_children():
@@ -379,6 +420,7 @@ class SecureChatClient:
                 # Disable other tabs
                 self.notebook.tab(1, state='disabled')
                 self.notebook.tab(2, state='disabled')
+                self.notebook.tab(3, state='disabled')
                 
                 # Show login view and switch to auth tab
                 self.show_login_view()
@@ -547,6 +589,159 @@ class SecureChatClient:
                             bg='#e74c3c', fg='white',
                             relief='flat', padx=15, pady=5)
         clear_btn.pack(side='left', padx=5)
+    
+    def setup_groups_ui(self):
+        """Setup group management and messaging interface"""
+        # Create horizontal paned window for groups list and chat
+        main_paned = tk.PanedWindow(self.groups_frame, orient='horizontal', bg='#2c3e50')
+        main_paned.pack(fill='both', expand=True, padx=10, pady=10)
+        
+        # Left panel: Groups management
+        groups_panel = tk.Frame(main_paned, bg='#34495e', width=350)
+        main_paned.add(groups_panel, minsize=300)
+        
+        # Groups header
+        groups_header = tk.Frame(groups_panel, bg='#2c3e50')
+        groups_header.pack(fill='x', padx=10, pady=10)
+        
+        groups_title = tk.Label(groups_header, text="👥 My Groups", 
+                               font=('Helvetica', 14, 'bold'),
+                               fg='#ecf0f1', bg='#2c3e50')
+        groups_title.pack(side='left')
+        
+        # Action buttons
+        btn_frame = tk.Frame(groups_header, bg='#2c3e50')
+        btn_frame.pack(side='right')
+        
+        create_btn = tk.Button(btn_frame, text="➕ Create", 
+                              command=self.show_create_group_dialog,
+                              font=('Helvetica', 9, 'bold'),
+                              bg='#27ae60', fg='white',
+                              relief='flat', padx=10, pady=3)
+        create_btn.pack(side='left', padx=2)
+        
+        join_btn = tk.Button(btn_frame, text="🔍 Join", 
+                            command=self.show_join_group_dialog,
+                            font=('Helvetica', 9, 'bold'),
+                            bg='#3498db', fg='white',
+                            relief='flat', padx=10, pady=3)
+        join_btn.pack(side='left', padx=2)
+        
+        refresh_btn = tk.Button(btn_frame, text="🔄", 
+                               command=self.refresh_groups,
+                               font=('Helvetica', 9, 'bold'),
+                               bg='#95a5a6', fg='white',
+                               relief='flat', padx=5, pady=3)
+        refresh_btn.pack(side='left', padx=2)
+        
+        # Groups list
+        groups_list_frame = tk.Frame(groups_panel, bg='#34495e')
+        groups_list_frame.pack(fill='both', expand=True, padx=10, pady=(0, 10))
+        
+        # Create scrollable groups list
+        self.groups_canvas = tk.Canvas(groups_list_frame, bg='#1a252f', highlightthickness=0)
+        groups_scrollbar = tk.Scrollbar(groups_list_frame, orient='vertical', command=self.groups_canvas.yview)
+        self.groups_scrollable_frame = tk.Frame(self.groups_canvas, bg='#1a252f')
+        
+        self.groups_scrollable_frame.bind(
+            "<Configure>",
+            lambda e: self.groups_canvas.configure(scrollregion=self.groups_canvas.bbox("all"))
+        )
+        
+        self.groups_canvas.create_window((0, 0), window=self.groups_scrollable_frame, anchor="nw")
+        self.groups_canvas.configure(yscrollcommand=groups_scrollbar.set)
+        
+        groups_scrollbar.pack(side="right", fill="y")
+        self.groups_canvas.pack(side="left", fill="both", expand=True)
+        
+        # Initially show "no groups" message
+        self.no_groups_label = tk.Label(self.groups_scrollable_frame, 
+                                       text="No groups yet\nCreate or join a group to start!", 
+                                       font=('Helvetica', 11),
+                                       fg='#95a5a6', bg='#1a252f',
+                                       justify='center')
+        self.no_groups_label.pack(pady=50)
+        
+        # Right panel: Group chat
+        chat_panel = tk.Frame(main_paned, bg='#2c3e50')
+        main_paned.add(chat_panel, minsize=400)
+        
+        # Group chat header
+        self.group_chat_header = tk.Frame(chat_panel, bg='#34495e', height=60)
+        self.group_chat_header.pack(fill='x', padx=10, pady=(10, 5))
+        self.group_chat_header.pack_propagate(False)
+        
+        # Group info
+        self.group_info_label = tk.Label(self.group_chat_header, text="💬 Select a group to start chatting", 
+                                        font=('Helvetica', 12, 'bold'),
+                                        fg='#ecf0f1', bg='#34495e')
+        self.group_info_label.pack(side='left', padx=10, pady=15)
+        
+        # Group actions
+        group_actions_frame = tk.Frame(self.group_chat_header, bg='#34495e')
+        group_actions_frame.pack(side='right', padx=10, pady=10)
+        
+        self.members_btn = tk.Button(group_actions_frame, text="👥 Members", 
+                                    command=self.show_group_members,
+                                    font=('Helvetica', 9),
+                                    bg='#9b59b6', fg='white',
+                                    relief='flat', padx=10, pady=5,
+                                    state='disabled')
+        self.members_btn.pack(side='left', padx=2)
+        
+        self.leave_group_btn = tk.Button(group_actions_frame, text="🚪 Leave", 
+                                        command=self.leave_current_group,
+                                        font=('Helvetica', 9),
+                                        bg='#e74c3c', fg='white',
+                                        relief='flat', padx=10, pady=5,
+                                        state='disabled')
+        self.leave_group_btn.pack(side='left', padx=2)
+        
+        # Group messages display
+        self.group_messages_frame = tk.Frame(chat_panel, bg='#2c3e50')
+        self.group_messages_frame.pack(fill='both', expand=True, padx=10, pady=5)
+        
+        self.group_messages_text = scrolledtext.ScrolledText(
+            self.group_messages_frame, 
+            height=20, 
+            state=tk.DISABLED,
+            font=('Consolas', 10),
+            bg='#1a252f',
+            fg='#ecf0f1',
+            insertbackground='#ecf0f1',
+            selectbackground='#3498db',
+            relief='solid',
+            bd=1
+        )
+        self.group_messages_text.pack(fill='both', expand=True)
+        
+        # Group message input
+        self.group_input_frame = tk.Frame(chat_panel, bg='#2c3e50', height=50)
+        self.group_input_frame.pack(fill='x', padx=10, pady=5)
+        self.group_input_frame.pack_propagate(False)
+        
+        self.group_message_entry = tk.Entry(self.group_input_frame, font=('Helvetica', 11),
+                                           bg='#ecf0f1', relief='solid', bd=1,
+                                           state='disabled')
+        self.group_message_entry.pack(side='left', fill='both', expand=True, padx=(0, 10))
+        self.group_message_entry.bind('<Return>', self.send_group_message)
+        
+        self.group_send_btn = tk.Button(self.group_input_frame, text="📤 Send", 
+                                       command=self.send_group_message,
+                                       font=('Helvetica', 10, 'bold'),
+                                       bg='#27ae60', fg='white',
+                                       relief='flat', padx=20, pady=8,
+                                       state='disabled')
+        self.group_send_btn.pack(side='right')
+        
+        # Group status
+        self.group_status_frame = tk.Frame(chat_panel, bg='#2c3e50')
+        self.group_status_frame.pack(fill='x', padx=10, pady=5)
+        
+        self.group_status_label = tk.Label(self.group_status_frame, text="No group selected",
+                                          font=('Helvetica', 10),
+                                          fg='#95a5a6', bg='#2c3e50')
+        self.group_status_label.pack(side='left')
     
     def setup_socketio_handlers(self):
         """Setup Socket.IO event handlers with enhanced security"""
@@ -760,6 +955,79 @@ class SecureChatClient:
             except Exception as e:
                 print(f"Error handling online users: {str(e)}")
                 messagebox.showerror("Error", f"Failed to display online users: {str(e)}")
+        
+        # Group-related socket handlers
+        
+        @self.sio.event
+        def new_group_message(data):
+            """Handle incoming group message"""
+            try:
+                sender = data['sender']
+                group_id = data['group_id']
+                encrypted_message = json.loads(data['encrypted_message'])
+                
+                # Only process if we're in this group
+                if self.current_group and self.current_group['id'] == group_id:
+                    # Decrypt message
+                    decrypted_text = self.crypto.decrypt_group_message(encrypted_message)
+                    
+                    # Sanitize and display
+                    decrypted_text = self.sanitizer.sanitize_message(decrypted_text)
+                    self.display_group_message(f"📩 {sender}: {decrypted_text}")
+                    
+                    # Log
+                    self.auditor.log_security_event("GROUP_MESSAGE_RECEIVED", 
+                                                   f"Received group message from {sender}")
+                
+            except Exception as e:
+                print(f"Error handling group message: {str(e)}")
+                self.auditor.log_security_event("GROUP_DECRYPT_ERROR", str(e), "ERROR")
+                if self.current_group and self.current_group['id'] == data.get('group_id'):
+                    self.display_group_message(f"❌ Error decrypting message from {data.get('sender', 'unknown')}")
+        
+        @self.sio.event
+        def group_joined(data):
+            """Handle successful group room join"""
+            group = data['group']
+            self.display_group_message(f"🔐 Joined group '{group['name']}' - End-to-end encryption enabled")
+        
+        @self.sio.event
+        def group_left(data):
+            """Handle group room leave"""
+            group_id = data['group_id']
+            self.display_group_message(f"🚪 Left group room")
+        
+        @self.sio.event
+        def user_joined_group(data):
+            """Handle notification that a user joined the group"""
+            username = data['username']
+            group_name = data.get('group_name', 'group')
+            if self.current_group and self.current_group['id'] == data['group_id']:
+                self.display_group_message(f"👋 {username} joined {group_name}")
+        
+        @self.sio.event
+        def user_left_group(data):
+            """Handle notification that a user left the group"""
+            username = data['username']
+            if self.current_group and self.current_group['id'] == data['group_id']:
+                self.display_group_message(f"👋 {username} left the group")
+        
+        @self.sio.event
+        def group_message_sent(data):
+            """Handle confirmation that group message was sent"""
+            # Message already displayed locally, just log
+            pass
+        
+        @self.sio.event
+        def group_info(data):
+            """Handle group information response"""
+            try:
+                group = data['group']
+                members = data['members']
+                self.display_group_members_dialog(group, members)
+            except Exception as e:
+                print(f"Error handling group info: {str(e)}")
+                messagebox.showerror("Error", f"Failed to display group info: {str(e)}")
     
     def display_online_users_popup(self, users: List[str], timestamp: str):
         """Display online users in a popup window"""
@@ -983,6 +1251,7 @@ class SecureChatClient:
                 # Enable other tabs
                 self.notebook.tab(1, state='normal')
                 self.notebook.tab(2, state='normal')
+                self.notebook.tab(3, state='normal') # Enable Groups tab
                 
                 self.chat_status_label.config(text=f"Logged in as {username}", fg='#27ae60')
                 self.auditor.log_security_event("LOGIN_SUCCESS", f"User {username} logged in")
@@ -993,6 +1262,9 @@ class SecureChatClient:
                 # Show logout view and switch to chat tab
                 self.show_logout_view()
                 self.notebook.select(1)  # Switch to chat tab after login
+                
+                # Load user's groups
+                self.refresh_groups()
                 
             else:
                 error_msg = response.json().get('error', 'Login failed')
@@ -1418,6 +1690,653 @@ class SecureChatClient:
             self.auditor.suspicious_activity.clear()
             self.refresh_security_report()
             messagebox.showinfo("Success", "Security logs cleared")
+    
+    # Group Management Methods
+    
+    def show_create_group_dialog(self):
+        """Show dialog to create a new group"""
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Create New Group")
+        dialog.geometry("400x300")
+        dialog.configure(bg='#2c3e50')
+        dialog.resizable(False, False)
+        
+        # Make dialog modal
+        dialog.transient(self.root)
+        dialog.grab_set()
+        
+        # Center the dialog
+        dialog.update_idletasks()
+        x = (dialog.winfo_screenwidth() // 2) - (400 // 2)
+        y = (dialog.winfo_screenheight() // 2) - (300 // 2)
+        dialog.geometry(f"400x300+{x}+{y}")
+        
+        # Title
+        title_label = tk.Label(dialog, text="Create New Group", 
+                              font=('Helvetica', 16, 'bold'),
+                              fg='#ecf0f1', bg='#2c3e50')
+        title_label.pack(pady=20)
+        
+        # Form frame
+        form_frame = tk.Frame(dialog, bg='#2c3e50')
+        form_frame.pack(pady=20, padx=40, fill='both', expand=True)
+        
+        # Group name
+        tk.Label(form_frame, text="Group Name:", font=('Helvetica', 12),
+                fg='#ecf0f1', bg='#2c3e50').pack(anchor='w', pady=(0, 5))
+        name_entry = tk.Entry(form_frame, font=('Helvetica', 11), width=40)
+        name_entry.pack(pady=(0, 15))
+        name_entry.focus()
+        
+        # Group description
+        tk.Label(form_frame, text="Description (optional):", font=('Helvetica', 12),
+                fg='#ecf0f1', bg='#2c3e50').pack(anchor='w', pady=(0, 5))
+        desc_text = tk.Text(form_frame, font=('Helvetica', 11), width=40, height=4)
+        desc_text.pack(pady=(0, 20))
+        
+        # Buttons
+        buttons_frame = tk.Frame(form_frame, bg='#2c3e50')
+        buttons_frame.pack(fill='x')
+        
+        def create_group():
+            name = name_entry.get().strip()
+            description = desc_text.get("1.0", tk.END).strip()
+            
+            if not name:
+                messagebox.showwarning("Warning", "Group name is required")
+                return
+            
+            if len(name) > 50:
+                messagebox.showwarning("Warning", "Group name too long (max 50 characters)")
+                return
+            
+            self.create_group(name, description)
+            dialog.destroy()
+        
+        create_btn = tk.Button(buttons_frame, text="Create Group", 
+                              command=create_group,
+                              font=('Helvetica', 11, 'bold'),
+                              bg='#27ae60', fg='white',
+                              relief='flat', padx=20, pady=8)
+        create_btn.pack(side='right')
+        
+        cancel_btn = tk.Button(buttons_frame, text="Cancel", 
+                              command=dialog.destroy,
+                              font=('Helvetica', 11),
+                              bg='#95a5a6', fg='white',
+                              relief='flat', padx=20, pady=8)
+        cancel_btn.pack(side='right', padx=(0, 10))
+        
+        # Bind Enter key to create
+        dialog.bind('<Return>', lambda e: create_group())
+    
+    def show_join_group_dialog(self):
+        """Show dialog to search and join groups"""
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Join Group")
+        dialog.geometry("500x400")
+        dialog.configure(bg='#2c3e50')
+        dialog.resizable(True, True)
+        
+        # Make dialog modal
+        dialog.transient(self.root)
+        dialog.grab_set()
+        
+        # Center the dialog
+        dialog.update_idletasks()
+        x = (dialog.winfo_screenwidth() // 2) - (500 // 2)
+        y = (dialog.winfo_screenheight() // 2) - (400 // 2)
+        dialog.geometry(f"500x400+{x}+{y}")
+        
+        # Title
+        title_label = tk.Label(dialog, text="Join Group", 
+                              font=('Helvetica', 16, 'bold'),
+                              fg='#ecf0f1', bg='#2c3e50')
+        title_label.pack(pady=20)
+        
+        # Search frame
+        search_frame = tk.Frame(dialog, bg='#2c3e50')
+        search_frame.pack(pady=10, padx=20, fill='x')
+        
+        tk.Label(search_frame, text="Search groups:", font=('Helvetica', 12),
+                fg='#ecf0f1', bg='#2c3e50').pack(anchor='w', pady=(0, 5))
+        
+        search_entry_frame = tk.Frame(search_frame, bg='#2c3e50')
+        search_entry_frame.pack(fill='x')
+        
+        search_entry = tk.Entry(search_entry_frame, font=('Helvetica', 11))
+        search_entry.pack(side='left', fill='x', expand=True, padx=(0, 10))
+        
+        def search_groups():
+            query = search_entry.get().strip()
+            if query:
+                self.search_groups(query, results_frame)
+        
+        search_btn = tk.Button(search_entry_frame, text="🔍 Search", 
+                              command=search_groups,
+                              font=('Helvetica', 10, 'bold'),
+                              bg='#3498db', fg='white',
+                              relief='flat', padx=15, pady=5)
+        search_btn.pack(side='right')
+        
+        # Results frame
+        results_frame = tk.Frame(dialog, bg='#2c3e50')
+        results_frame.pack(fill='both', expand=True, padx=20, pady=10)
+        
+        # Initial message
+        tk.Label(results_frame, text="Enter a search term to find groups", 
+                font=('Helvetica', 11),
+                fg='#95a5a6', bg='#2c3e50').pack(pady=50)
+        
+        # Bind Enter key to search
+        search_entry.bind('<Return>', lambda e: search_groups())
+        search_entry.focus()
+        
+        # Close button
+        close_btn = tk.Button(dialog, text="Close", 
+                             command=dialog.destroy,
+                             font=('Helvetica', 11),
+                             bg='#95a5a6', fg='white',
+                             relief='flat', padx=20, pady=8)
+        close_btn.pack(pady=10)
+    
+    def create_group(self, name: str, description: str):
+        """Create a new group"""
+        try:
+            headers = {'Authorization': f'Bearer {self.token}'}
+            response = requests.post(f'{self.server_url}/api/groups', 
+                                   json={'name': name, 'description': description},
+                                   headers=headers, timeout=10)
+            
+            if response.status_code == 200:
+                data = response.json()
+                group = data['group']
+                
+                # Add group key to crypto core
+                group_key = base64.b64decode(group['group_key'])
+                self.crypto.add_group_key(group['id'], group_key)
+                
+                messagebox.showinfo("Success", f"Group '{name}' created successfully!")
+                self.refresh_groups()
+                self.auditor.log_security_event("GROUP_CREATED", f"Created group: {name}")
+            else:
+                error_msg = response.json().get('error', 'Failed to create group')
+                messagebox.showerror("Error", error_msg)
+        
+        except requests.exceptions.RequestException as e:
+            messagebox.showerror("Error", f"Network error: {str(e)}")
+    
+    def search_groups(self, query: str, results_container: tk.Widget):
+        """Search for groups and display results"""
+        try:
+            headers = {'Authorization': f'Bearer {self.token}'}
+            response = requests.get(f'{self.server_url}/api/groups/search?q={query}', 
+                                  headers=headers, timeout=10)
+            
+            # Clear previous results
+            for widget in results_container.winfo_children():
+                widget.destroy()
+            
+            if response.status_code == 200:
+                data = response.json()
+                groups = data['groups']
+                
+                if groups:
+                    # Results header
+                    header_label = tk.Label(results_container, text=f"Found {len(groups)} group(s):", 
+                                           font=('Helvetica', 12, 'bold'),
+                                           fg='#ecf0f1', bg='#2c3e50')
+                    header_label.pack(anchor='w', pady=(0, 10))
+                    
+                    # Scrollable results
+                    canvas = tk.Canvas(results_container, bg='#1a252f', highlightthickness=0)
+                    scrollbar = tk.Scrollbar(results_container, orient='vertical', command=canvas.yview)
+                    scrollable_frame = tk.Frame(canvas, bg='#1a252f')
+                    
+                    scrollable_frame.bind(
+                        "<Configure>",
+                        lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+                    )
+                    
+                    canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+                    canvas.configure(yscrollcommand=scrollbar.set)
+                    
+                    scrollbar.pack(side="right", fill="y")
+                    canvas.pack(side="left", fill="both", expand=True)
+                    
+                    # Display groups
+                    for group in groups:
+                        self.create_group_search_item(scrollable_frame, group)
+                else:
+                    tk.Label(results_container, text="No groups found", 
+                            font=('Helvetica', 11),
+                            fg='#95a5a6', bg='#2c3e50').pack(pady=50)
+            else:
+                error_msg = response.json().get('error', 'Search failed')
+                tk.Label(results_container, text=f"Error: {error_msg}", 
+                        font=('Helvetica', 11),
+                        fg='#e74c3c', bg='#2c3e50').pack(pady=50)
+        
+        except requests.exceptions.RequestException as e:
+            tk.Label(results_container, text=f"Network error: {str(e)}", 
+                    font=('Helvetica', 11),
+                    fg='#e74c3c', bg='#2c3e50').pack(pady=50)
+    
+    def create_group_search_item(self, parent: tk.Widget, group: Dict):
+        """Create a group item in search results"""
+        item_frame = tk.Frame(parent, bg='#2c3e50', relief='solid', bd=1)
+        item_frame.pack(fill='x', pady=2, padx=5)
+        
+        # Group info
+        info_frame = tk.Frame(item_frame, bg='#2c3e50')
+        info_frame.pack(side='left', fill='both', expand=True, padx=15, pady=10)
+        
+        # Group name
+        name_label = tk.Label(info_frame, text=f"👥 {group['name']}", 
+                             font=('Helvetica', 12, 'bold'),
+                             fg='#ecf0f1', bg='#2c3e50')
+        name_label.pack(anchor='w')
+        
+        # Group details
+        details = f"👤 Created by {group['creator_name']} • {group['member_count']} members"
+        details_label = tk.Label(info_frame, text=details, 
+                                font=('Helvetica', 10),
+                                fg='#bdc3c7', bg='#2c3e50')
+        details_label.pack(anchor='w')
+        
+        # Description
+        if group['description']:
+            desc_label = tk.Label(info_frame, text=group['description'], 
+                                 font=('Helvetica', 9),
+                                 fg='#95a5a6', bg='#2c3e50')
+            desc_label.pack(anchor='w')
+        
+        # Join button
+        join_btn = tk.Button(item_frame, text="Join", 
+                            command=lambda g=group: self.join_group(g['id']),
+                            font=('Helvetica', 10, 'bold'),
+                            bg='#27ae60', fg='white',
+                            relief='flat', padx=15, pady=5)
+        join_btn.pack(side='right', padx=15, pady=10)
+    
+    def join_group(self, group_id: int):
+        """Join a group"""
+        try:
+            headers = {'Authorization': f'Bearer {self.token}'}
+            response = requests.post(f'{self.server_url}/api/groups/{group_id}/join', 
+                                   headers=headers, timeout=10)
+            
+            if response.status_code == 200:
+                data = response.json()
+                group = data['group']
+                
+                # Add group key to crypto core
+                group_key = base64.b64decode(group['group_key'])
+                self.crypto.add_group_key(group['id'], group_key)
+                
+                messagebox.showinfo("Success", f"Joined group '{group['name']}' successfully!")
+                self.refresh_groups()
+                self.auditor.log_security_event("GROUP_JOINED", f"Joined group: {group['name']}")
+            else:
+                error_msg = response.json().get('error', 'Failed to join group')
+                messagebox.showerror("Error", error_msg)
+        
+        except requests.exceptions.RequestException as e:
+            messagebox.showerror("Error", f"Network error: {str(e)}")
+    
+    def refresh_groups(self):
+        """Refresh the list of user groups"""
+        try:
+            headers = {'Authorization': f'Bearer {self.token}'}
+            response = requests.get(f'{self.server_url}/api/groups', 
+                                  headers=headers, timeout=10)
+            
+            if response.status_code == 200:
+                data = response.json()
+                self.user_groups = data['groups']
+                
+                # Add group keys to crypto core
+                for group in self.user_groups:
+                    group_key = base64.b64decode(group['group_key'])
+                    self.crypto.add_group_key(group['id'], group_key)
+                
+                self.display_groups()
+            else:
+                print("Failed to fetch groups")
+        
+        except requests.exceptions.RequestException as e:
+            print(f"Error fetching groups: {e}")
+    
+    def display_groups(self):
+        """Display user groups in the groups list"""
+        # Clear existing groups
+        for widget in self.groups_scrollable_frame.winfo_children():
+            widget.destroy()
+        
+        if self.user_groups:
+            for i, group in enumerate(self.user_groups):
+                self.create_group_item(self.groups_scrollable_frame, group, i)
+        else:
+            self.no_groups_label = tk.Label(self.groups_scrollable_frame, 
+                                           text="No groups yet\nCreate or join a group to start!", 
+                                           font=('Helvetica', 11),
+                                           fg='#95a5a6', bg='#1a252f',
+                                           justify='center')
+            self.no_groups_label.pack(pady=50)
+    
+    def create_group_item(self, parent: tk.Widget, group: Dict, index: int):
+        """Create a group item in the groups list"""
+        # Alternate colors
+        bg_color = '#2c3e50' if index % 2 == 0 else '#34495e'
+        
+        group_frame = tk.Frame(parent, bg=bg_color, relief='flat')
+        group_frame.pack(fill='x', pady=1, padx=5)
+        
+        # Group info
+        info_frame = tk.Frame(group_frame, bg=bg_color)
+        info_frame.pack(side='left', fill='both', expand=True, padx=15, pady=12)
+        
+        # Group name
+        name_label = tk.Label(info_frame, text=f"👥 {group['name']}", 
+                             font=('Helvetica', 11, 'bold'),
+                             fg='#ecf0f1', bg=bg_color)
+        name_label.pack(anchor='w')
+        
+        # Group details
+        details = f"{group['member_count']} members • {group['role']}"
+        details_label = tk.Label(info_frame, text=details, 
+                                font=('Helvetica', 9),
+                                fg='#bdc3c7', bg=bg_color)
+        details_label.pack(anchor='w')
+        
+        # Action button
+        action_frame = tk.Frame(group_frame, bg=bg_color)
+        action_frame.pack(side='right', padx=10, pady=10)
+        
+        chat_btn = tk.Button(action_frame, text="💬", 
+                            command=lambda g=group: self.select_group(g),
+                            font=('Helvetica', 10, 'bold'),
+                            bg='#27ae60', fg='white',
+                            relief='flat', padx=8, pady=5)
+        chat_btn.pack()
+        
+        # Click to select group
+        def select_group_click(event, g=group):
+            self.select_group(g)
+        
+        group_frame.bind("<Button-1>", select_group_click)
+        info_frame.bind("<Button-1>", select_group_click)
+        name_label.bind("<Button-1>", select_group_click)
+        details_label.bind("<Button-1>", select_group_click)
+    
+    def select_group(self, group: Dict):
+        """Select a group for chatting"""
+        self.current_group = group
+        
+        # Update UI
+        self.group_info_label.config(text=f"👥 {group['name']} ({group['member_count']} members)")
+        self.group_status_label.config(text=f"Selected group: {group['name']}", fg='#27ae60')
+        
+        # Enable group chat controls
+        self.group_message_entry.config(state='normal')
+        self.group_send_btn.config(state='normal')
+        self.members_btn.config(state='normal')
+        self.leave_group_btn.config(state='normal')
+        
+        # Join group room for real-time messaging
+        self.sio.emit('join_group_room', {
+            'username': self.username,
+            'group_id': group['id'],
+            'token': self.token
+        })
+        
+        # Load group messages
+        self.load_group_messages(group['id'])
+        
+        # Clear group message input
+        self.group_message_entry.delete(0, tk.END)
+        self.group_message_entry.focus()
+    
+    def send_group_message(self, event=None):
+        """Send encrypted group message"""
+        if not self.current_group:
+            messagebox.showwarning("Warning", "Please select a group first")
+            return
+        
+        message = self.sanitizer.sanitize_message(self.group_message_entry.get())
+        if not message:
+            return
+        
+        # Input validation
+        if len(message) > 1000:
+            messagebox.showwarning("Warning", "Message too long (max 1000 characters)")
+            return
+        
+        # Spam detection
+        if self.sanitizer.detect_spam(message):
+            messagebox.showwarning("Warning", "Message appears to be spam and was blocked")
+            return
+        
+        try:
+            # Encrypt group message
+            encrypted_data = self.crypto.encrypt_group_message(self.current_group['id'], message)
+            
+            # Send to server
+            self.sio.emit('send_group_message', {
+                'sender': self.username,
+                'group_id': self.current_group['id'],
+                'encrypted_message': json.dumps(encrypted_data),
+                'token': self.token
+            })
+            
+            # Display locally
+            self.display_group_message(f"📤 You: {message}")
+            self.group_message_entry.delete(0, tk.END)
+            
+            # Log
+            self.auditor.log_security_event("GROUP_MESSAGE_SENT", 
+                                           f"Sent message to group {self.current_group['name']}")
+            
+        except Exception as e:
+            self.auditor.log_security_event("GROUP_SEND_ERROR", str(e), "ERROR")
+            messagebox.showerror("Error", f"Failed to send group message: {str(e)}")
+    
+    def display_group_message(self, message: str):
+        """Display group message with enhanced formatting"""
+        timestamp = datetime.now().strftime('%H:%M:%S')
+        self.group_messages_text.config(state=tk.NORMAL)
+        self.group_messages_text.insert(tk.END, f"[{timestamp}] {message}\n")
+        self.group_messages_text.see(tk.END)
+        self.group_messages_text.config(state=tk.DISABLED)
+    
+    def load_group_messages(self, group_id: int):
+        """Load group message history"""
+        try:
+            headers = {'Authorization': f'Bearer {self.token}'}
+            response = requests.get(f'{self.server_url}/api/groups/{group_id}/messages', 
+                                  headers=headers, timeout=10)
+            
+            if response.status_code == 200:
+                data = response.json()
+                messages = data['messages']
+                
+                # Clear current messages
+                self.group_messages_text.config(state=tk.NORMAL)
+                self.group_messages_text.delete(1.0, tk.END)
+                
+                # Display messages
+                for msg in messages[-20:]:  # Show last 20 messages
+                    timestamp = datetime.fromisoformat(msg['timestamp']).strftime('%H:%M:%S')
+                    sender = msg['sender_username']
+                    self.display_group_message(f"💭 [{timestamp}] {sender}: [Encrypted message]")
+                
+                self.group_messages_text.config(state=tk.DISABLED)
+        
+        except requests.exceptions.RequestException as e:
+            print(f"Failed to load group messages: {e}")
+    
+    def show_group_members(self):
+        """Show group members dialog"""
+        if not self.current_group:
+            return
+        
+        # Request group info
+        self.sio.emit('get_group_info', {
+            'username': self.username,
+            'group_id': self.current_group['id'],
+            'token': self.token
+        })
+    
+    def leave_current_group(self):
+        """Leave the currently selected group"""
+        if not self.current_group:
+            return
+        
+        if messagebox.askyesno("Confirm", f"Are you sure you want to leave '{self.current_group['name']}'?"):
+            self.leave_group(self.current_group['id'])
+    
+    def leave_group(self, group_id: int):
+        """Leave a group"""
+        try:
+            headers = {'Authorization': f'Bearer {self.token}'}
+            response = requests.post(f'{self.server_url}/api/groups/{group_id}/leave', 
+                                   headers=headers, timeout=10)
+            
+            if response.status_code == 200:
+                # Remove group key from crypto
+                self.crypto.remove_group_key(group_id)
+                
+                # Leave group room
+                self.sio.emit('leave_group_room', {
+                    'username': self.username,
+                    'group_id': group_id,
+                    'token': self.token
+                })
+                
+                # Reset current group if it was the one we left
+                if self.current_group and self.current_group['id'] == group_id:
+                    self.current_group = None
+                    self.group_info_label.config(text="💬 Select a group to start chatting")
+                    self.group_status_label.config(text="No group selected", fg='#95a5a6')
+                    self.group_message_entry.config(state='disabled')
+                    self.group_send_btn.config(state='disabled')
+                    self.members_btn.config(state='disabled')
+                    self.leave_group_btn.config(state='disabled')
+                    
+                    # Clear messages
+                    self.group_messages_text.config(state=tk.NORMAL)
+                    self.group_messages_text.delete(1.0, tk.END)
+                    self.group_messages_text.config(state=tk.DISABLED)
+                
+                messagebox.showinfo("Success", "Left group successfully")
+                self.refresh_groups()
+                self.auditor.log_security_event("GROUP_LEFT", f"Left group ID: {group_id}")
+            else:
+                error_msg = response.json().get('error', 'Failed to leave group')
+                messagebox.showerror("Error", error_msg)
+        
+        except requests.exceptions.RequestException as e:
+            messagebox.showerror("Error", f"Network error: {str(e)}")
+    
+    def display_group_members_dialog(self, group: Dict, members: List[Dict]):
+        """Display group members in a dialog"""
+        dialog = tk.Toplevel(self.root)
+        dialog.title(f"Members of {group['name']}")
+        dialog.geometry("400x500")
+        dialog.configure(bg='#2c3e50')
+        dialog.resizable(True, True)
+        
+        # Make dialog modal
+        dialog.transient(self.root)
+        dialog.grab_set()
+        
+        # Center the dialog
+        dialog.update_idletasks()
+        x = (dialog.winfo_screenwidth() // 2) - (400 // 2)
+        y = (dialog.winfo_screenheight() // 2) - (500 // 2)
+        dialog.geometry(f"400x500+{x}+{y}")
+        
+        # Header
+        header_frame = tk.Frame(dialog, bg='#34495e')
+        header_frame.pack(fill='x', padx=10, pady=10)
+        
+        title_label = tk.Label(header_frame, text=f"👥 {group['name']}", 
+                              font=('Helvetica', 16, 'bold'),
+                              fg='#ecf0f1', bg='#34495e')
+        title_label.pack()
+        
+        info_label = tk.Label(header_frame, text=f"{len(members)} members", 
+                             font=('Helvetica', 12),
+                             fg='#bdc3c7', bg='#34495e')
+        info_label.pack()
+        
+        # Members list
+        members_frame = tk.Frame(dialog, bg='#2c3e50')
+        members_frame.pack(fill='both', expand=True, padx=10, pady=10)
+        
+        # Scrollable members list
+        canvas = tk.Canvas(members_frame, bg='#1a252f', highlightthickness=0)
+        scrollbar = tk.Scrollbar(members_frame, orient='vertical', command=canvas.yview)
+        scrollable_frame = tk.Frame(canvas, bg='#1a252f')
+        
+        scrollable_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+        
+        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+        
+        scrollbar.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
+        
+        # Display members
+        for i, member in enumerate(members):
+            self.create_member_item(scrollable_frame, member, i)
+        
+        # Close button
+        close_btn = tk.Button(dialog, text="Close", 
+                             command=dialog.destroy,
+                             font=('Helvetica', 11),
+                             bg='#95a5a6', fg='white',
+                             relief='flat', padx=20, pady=8)
+        close_btn.pack(pady=10)
+    
+    def create_member_item(self, parent: tk.Widget, member: Dict, index: int):
+        """Create a member item in the members list"""
+        # Alternate colors
+        bg_color = '#2c3e50' if index % 2 == 0 else '#34495e'
+        
+        member_frame = tk.Frame(parent, bg=bg_color, relief='flat')
+        member_frame.pack(fill='x', pady=1, padx=5)
+        
+        # Member info
+        info_frame = tk.Frame(member_frame, bg=bg_color)
+        info_frame.pack(side='left', fill='both', expand=True, padx=15, pady=10)
+        
+        # Member name and role
+        name_text = f"👤 {member['username']}"
+        if member['username'] == self.username:
+            name_text += " (You)"
+        
+        name_label = tk.Label(info_frame, text=name_text, 
+                             font=('Helvetica', 11, 'bold'),
+                             fg='#ecf0f1', bg=bg_color)
+        name_label.pack(anchor='w')
+        
+        # Role and join date
+        role_color = '#e67e22' if member['role'] == 'admin' else '#3498db'
+        role_label = tk.Label(info_frame, text=f"🔰 {member['role'].title()}", 
+                             font=('Helvetica', 9),
+                             fg=role_color, bg=bg_color)
+        role_label.pack(anchor='w')
+        
+        # Join date
+        join_date = datetime.fromisoformat(member['joined_at']).strftime('%Y-%m-%d')
+        date_label = tk.Label(info_frame, text=f"📅 Joined {join_date}", 
+                             font=('Helvetica', 8),
+                             fg='#95a5a6', bg=bg_color)
+        date_label.pack(anchor='w')
     
     def run(self):
         """Start the client application"""
