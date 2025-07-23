@@ -25,9 +25,6 @@ class SecureChatClient:
     def __init__(self, server_url: str = "http://127.0.0.1:5000"):
         self.server_url = server_url
         self.root = tk.Tk()
-        self.root.title("Secure Chat - Signal Clone")
-        self.root.geometry("900x700")
-        self.root.configure(bg='#2c3e50')
         
         # Core components
         self.crypto = CryptoCore()
@@ -64,84 +61,147 @@ class SecureChatClient:
         # Message history
         self.message_history = {}  # partner -> list of messages
         
-        self.setup_ui()
+        # Setup styles first (creates color palette)
         self.setup_styles()
+        
+        # Setup UI (uses color palette)
+        self.setup_ui()
     
     def setup_styles(self):
-        """Setup modern UI styles"""
+        """Setup modern blockchain-inspired UI styles"""
+        # Configure root window with dark theme
+        self.root.configure(bg='#0a0a0f')
+        
+        # Define modern blockchain color palette
+        self.colors = {
+            'bg_primary': '#0a0a0f',       # Deep dark background
+            'bg_secondary': '#141420',      # Card backgrounds  
+            'bg_tertiary': '#1e1e2f',      # Elevated surfaces
+            'bg_accent': '#2a2a40',        # Hover states
+            'text_primary': '#f8f9fa',     # Pure white text
+            'text_secondary': '#b8bcc8',   # Muted text
+            'text_tertiary': '#6c757d',    # Disabled text
+            'accent_primary': '#00d2ff',   # Cyan blockchain accent
+            'accent_secondary': '#3f51b5', # Deep blue
+            'success': '#00c851',          # Bright green
+            'warning': '#ff8800',          # Amber warning
+            'error': '#ff3547',           # Bright red error
+            'crypto_gold': '#ffd700',     # Gold accent
+            'crypto_purple': '#7c4dff',   # Purple accent
+            'border': '#343a46',          # Subtle borders
+            'shadow': '#000000'           # Shadow color
+        }
+        
+        # Setup ttk styles
         style = ttk.Style()
         style.theme_use('clam')
         
-        # Configure colors
+        # Configure modern notebook (tabs)
+        style.configure('TNotebook', 
+                       background=self.colors['bg_primary'],
+                       borderwidth=0)
+        style.configure('TNotebook.Tab',
+                       background=self.colors['bg_tertiary'],
+                       foreground=self.colors['text_secondary'],
+                       padding=[25, 15],
+                       font=('Segoe UI', 12, 'bold'))
+        style.map('TNotebook.Tab',
+                 background=[('selected', self.colors['bg_secondary']),
+                           ('active', self.colors['bg_accent'])],
+                 foreground=[('selected', self.colors['accent_primary']),
+                           ('active', self.colors['text_primary'])])
+        
+        # Configure modern labels with larger fonts
         style.configure('Title.TLabel', 
-                       font=('Helvetica', 16, 'bold'),
-                       foreground='#ecf0f1',
-                       background='#2c3e50')
+                       font=('Segoe UI', 24, 'bold'),
+                       foreground=self.colors['accent_primary'],
+                       background=self.colors['bg_secondary'])
         
         style.configure('Heading.TLabel',
-                       font=('Helvetica', 12, 'bold'),
-                       foreground='#ecf0f1',
-                       background='#34495e')
+                       font=('Segoe UI', 18, 'bold'),
+                       foreground=self.colors['text_primary'],
+                       background=self.colors['bg_secondary'])
+        
+        style.configure('Subheading.TLabel',
+                       font=('Segoe UI', 14, 'bold'),
+                       foreground=self.colors['text_secondary'],
+                       background=self.colors['bg_secondary'])
         
         style.configure('Status.TLabel',
-                       font=('Helvetica', 10),
-                       foreground='#27ae60',
-                       background='#2c3e50')
+                       font=('Segoe UI', 12),
+                       foreground=self.colors['success'],
+                       background=self.colors['bg_secondary'])
         
         style.configure('Error.TLabel',
-                       font=('Helvetica', 10),
-                       foreground='#e74c3c',
-                       background='#2c3e50')
+                       font=('Segoe UI', 12),
+                       foreground=self.colors['error'],
+                       background=self.colors['bg_secondary'])
     
     def setup_ui(self):
-        """Setup the modern user interface"""
-        # Main container with dark theme
-        main_frame = tk.Frame(self.root, bg='#2c3e50')
-        main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        """Setup the modern blockchain-inspired user interface"""
+        self.root.title("🔐 SecureVault | Blockchain Messenger")
+        self.root.geometry("1400x1300")
+        self.root.minsize(1200, 1000)
         
-        # Create notebook for tabs with custom styling
-        self.notebook = ttk.Notebook(main_frame)
-        self.notebook.pack(fill=tk.BOTH, expand=True)
+        # Create gradient-like main container with modern styling
+        main_frame = tk.Frame(self.root, bg=self.colors['bg_primary'], relief='flat')
+        main_frame.pack(fill=tk.BOTH, expand=True, padx=15, pady=15)
+        
+        # Add subtle top accent border for premium feel
+        top_border = tk.Frame(main_frame, height=3, bg=self.colors['accent_primary'])
+        top_border.pack(fill='x', pady=(0, 10))
+        
+        # Create modern notebook for tabs with custom styling
+        self.notebook = ttk.Notebook(main_frame, style='TNotebook')
+        self.notebook.pack(fill=tk.BOTH, expand=True, pady=10)
         
         # Bind tab change event to refresh data when needed
         self.notebook.bind("<<NotebookTabChanged>>", self.on_tab_changed)
         
-        # Authentication tab
-        self.auth_frame = tk.Frame(self.notebook, bg='#34495e')
-        self.notebook.add(self.auth_frame, text="🔐 Login/Register")
+        # Authentication tab with gradient-like background
+        self.auth_frame = tk.Frame(self.notebook, bg=self.colors['bg_secondary'], relief='flat')
+        self.notebook.add(self.auth_frame, text="🔐 SecureVault")
         self.setup_auth_ui()
         
-        # Chat tab
-        self.chat_frame = tk.Frame(self.notebook, bg='#2c3e50')
-        self.notebook.add(self.chat_frame, text="💬 Chat")
+        # Chat tab with modern styling
+        self.chat_frame = tk.Frame(self.notebook, bg=self.colors['bg_secondary'], relief='flat')
+        self.notebook.add(self.chat_frame, text="💬 Encrypted Chat")
         self.setup_chat_ui()
         
-        # Groups tab
-        self.groups_frame = tk.Frame(self.notebook, bg='#2c3e50')
-        self.notebook.add(self.groups_frame, text="👥 Groups")
+        # Groups tab with card-like appearance
+        self.groups_frame = tk.Frame(self.notebook, bg=self.colors['bg_secondary'], relief='flat')
+        self.notebook.add(self.groups_frame, text="👥 Secure Groups")
         self.setup_groups_ui()
         
-        # Files tab
-        self.files_frame = tk.Frame(self.notebook, bg='#2c3e50')
-        self.notebook.add(self.files_frame, text="📁 Files")
+        # Files tab with blockchain aesthetic
+        self.files_frame = tk.Frame(self.notebook, bg=self.colors['bg_secondary'], relief='flat')
+        self.notebook.add(self.files_frame, text="📁 Vault Files")
         self.setup_files_ui()
         
-        # Security tab
-        self.security_frame = tk.Frame(self.notebook, bg='#34495e')
-        self.notebook.add(self.security_frame, text="🔒 Security")
+        # Security tab with modern security theme
+        self.security_frame = tk.Frame(self.notebook, bg=self.colors['bg_secondary'], relief='flat')
+        self.notebook.add(self.security_frame, text="🛡️ Security Audit")
         self.setup_security_ui()
         
-        # Initially disable chat, groups, files and security tabs
+        # Initially disable secure tabs until authentication
         self.notebook.tab(1, state='disabled')
         self.notebook.tab(2, state='disabled')
         self.notebook.tab(3, state='disabled')
         self.notebook.tab(4, state='disabled')
     
     def setup_auth_ui(self):
-        """Setup authentication interface with modern design"""
+        """Setup authentication interface with modern blockchain design"""
         # Create a container that can switch between login and logout views
-        self.auth_container = tk.Frame(self.auth_frame, bg='#34495e')
-        self.auth_container.pack(fill='both', expand=True)
+        self.auth_container = tk.Frame(self.auth_frame, bg=self.colors['bg_secondary'])
+        self.auth_container.pack(fill='both', expand=True, padx=20, pady=20)
+        
+        # Add subtle gradient effect with multiple frames
+        gradient_frame = tk.Frame(self.auth_container, bg=self.colors['bg_tertiary'], relief='flat')
+        gradient_frame.pack(fill='both', expand=True, padx=2, pady=2)
+        
+        # Inner container for content
+        self.inner_auth_container = tk.Frame(gradient_frame, bg=self.colors['bg_secondary'])
+        self.inner_auth_container.pack(fill='both', expand=True, padx=15, pady=15)
         
         # Setup login/register view
         self.setup_login_view()
@@ -153,96 +213,205 @@ class SecureChatClient:
         self.show_login_view()
     
     def setup_login_view(self):
-        """Setup the login/register interface"""
-        self.login_view = tk.Frame(self.auth_container, bg='#34495e')
+        """Setup the modern login/register interface"""
+        self.login_view = tk.Frame(self.inner_auth_container, bg=self.colors['bg_secondary'])
         
-        # Title
-        title_label = ttk.Label(self.login_view, text="🔒 Secure Chat Application", 
-                               style='Title.TLabel')
-        title_label.pack(pady=30)
+        # Modern header section
+        header_frame = tk.Frame(self.login_view, bg=self.colors['bg_secondary'])
+        header_frame.pack(pady=(40, 20))
         
-        subtitle_label = ttk.Label(self.login_view, text="Signal-inspired E2E encrypted messaging",
-                                  font=('Helvetica', 11),
-                                  foreground='#bdc3c7',
-                                  background='#34495e')
-        subtitle_label.pack(pady=(0, 30))
+        # Main title with blockchain styling
+        title_label = tk.Label(header_frame, text="🔐 SecureVault", 
+                              font=('Segoe UI', 36, 'bold'),
+                              foreground=self.colors['accent_primary'],
+                              bg=self.colors['bg_secondary'])
+        title_label.pack()
         
-        # Create container for forms
-        forms_container = tk.Frame(self.login_view, bg='#34495e')
-        forms_container.pack(expand=True, fill='both', padx=50)
+        # Subtitle with gradient-like effect
+        subtitle_label = tk.Label(header_frame, text="Blockchain-Secured Messaging Platform",
+                                 font=('Segoe UI', 16),
+                                 foreground=self.colors['text_secondary'],
+                                 bg=self.colors['bg_secondary'])
+        subtitle_label.pack(pady=(5, 10))
         
-        # Login section
-        login_frame = tk.LabelFrame(forms_container, text="🔑 Login", 
-                                   font=('Helvetica', 12, 'bold'),
-                                   fg='#ecf0f1', bg='#34495e',
-                                   padx=20, pady=20)
-        login_frame.pack(pady=10, fill='x')
+        # Security badge
+        security_badge = tk.Label(header_frame, text="⚡ End-to-End Encrypted • Zero-Knowledge • Decentralized",
+                                 font=('Segoe UI', 12, 'italic'),
+                                 foreground=self.colors['crypto_gold'],
+                                 bg=self.colors['bg_secondary'])
+        security_badge.pack(pady=(0, 20))
         
-        tk.Label(login_frame, text="Username:", font=('Helvetica', 10),
-                fg='#ecf0f1', bg='#34495e').pack(anchor=tk.W, pady=(0, 5))
-        self.login_username_entry = tk.Entry(login_frame, font=('Helvetica', 10),
-                                           width=30, relief='solid', bd=1)
-        self.login_username_entry.pack(fill='x', pady=(0, 10))
+        # Create modern container for forms
+        forms_container = tk.Frame(self.login_view, bg=self.colors['bg_secondary'])
+        forms_container.pack(expand=True, fill='both', padx=60, pady=20)
         
-        tk.Label(login_frame, text="Password:", font=('Helvetica', 10),
-                fg='#ecf0f1', bg='#34495e').pack(anchor=tk.W, pady=(0, 5))
-        self.login_password_entry = tk.Entry(login_frame, show="*", font=('Helvetica', 10),
-                                           width=30, relief='solid', bd=1)
-        self.login_password_entry.pack(fill='x', pady=(0, 15))
+        # Modern login section with card design
+        login_card = tk.Frame(forms_container, bg=self.colors['bg_tertiary'], relief='flat')
+        login_card.pack(pady=15, fill='x', padx=10)
         
-        login_btn = tk.Button(login_frame, text="🚀 Login", command=self.login,
-                             font=('Helvetica', 10, 'bold'),
-                             bg='#3498db', fg='white',
-                             relief='flat', padx=20, pady=8)
-        login_btn.pack()
+        # Add subtle border
+        login_border = tk.Frame(login_card, height=2, bg=self.colors['accent_primary'])
+        login_border.pack(fill='x')
         
-        # Register section
-        register_frame = tk.LabelFrame(forms_container, text="✨ Create Account", 
-                                      font=('Helvetica', 12, 'bold'),
-                                      fg='#ecf0f1', bg='#34495e',
-                                      padx=20, pady=20)
-        register_frame.pack(pady=10, fill='x')
+        login_frame = tk.Frame(login_card, bg=self.colors['bg_tertiary'])
+        login_frame.pack(padx=30, pady=25, fill='x')
         
-        tk.Label(register_frame, text="Username:", font=('Helvetica', 10),
-                fg='#ecf0f1', bg='#34495e').pack(anchor=tk.W, pady=(0, 5))
-        self.register_username_entry = tk.Entry(register_frame, font=('Helvetica', 10),
-                                              width=30, relief='solid', bd=1)
-        self.register_username_entry.pack(fill='x', pady=(0, 10))
+        # Login header
+        login_header = tk.Label(login_frame, text="🔑 Secure Access", 
+                               font=('Segoe UI', 20, 'bold'),
+                               fg=self.colors['text_primary'], bg=self.colors['bg_tertiary'])
+        login_header.pack(pady=(0, 25))
         
-        tk.Label(register_frame, text="Password:", font=('Helvetica', 10),
-                fg='#ecf0f1', bg='#34495e').pack(anchor=tk.W, pady=(0, 5))
-        self.register_password_entry = tk.Entry(register_frame, show="*", font=('Helvetica', 10),
-                                              width=30, relief='solid', bd=1)
-        self.register_password_entry.pack(fill='x', pady=(0, 15))
+        # Username field with modern styling
+        tk.Label(login_frame, text="Username:", font=('Segoe UI', 14, 'bold'),
+                fg=self.colors['text_secondary'], bg=self.colors['bg_tertiary']).pack(anchor=tk.W, pady=(0, 8))
+        self.login_username_entry = tk.Entry(login_frame, font=('Segoe UI', 14),
+                                           bg=self.colors['bg_secondary'], fg=self.colors['text_primary'],
+                                           relief='flat', bd=0, highlightthickness=2,
+                                           highlightcolor=self.colors['accent_primary'],
+                                           highlightbackground=self.colors['border'],
+                                           insertbackground=self.colors['text_primary'])
+        self.login_username_entry.pack(fill='x', pady=(0, 20), ipady=12)
         
-        register_btn = tk.Button(register_frame, text="🎯 Register", command=self.register,
-                               font=('Helvetica', 10, 'bold'),
-                               bg='#27ae60', fg='white',
-                               relief='flat', padx=20, pady=8)
-        register_btn.pack()
+        # Password field with modern styling
+        tk.Label(login_frame, text="Password:", font=('Segoe UI', 14, 'bold'),
+                fg=self.colors['text_secondary'], bg=self.colors['bg_tertiary']).pack(anchor=tk.W, pady=(0, 8))
+        self.login_password_entry = tk.Entry(login_frame, show="*", font=('Segoe UI', 14),
+                                           bg=self.colors['bg_secondary'], fg=self.colors['text_primary'],
+                                           relief='flat', bd=0, highlightthickness=2,
+                                           highlightcolor=self.colors['accent_primary'],
+                                           highlightbackground=self.colors['border'],
+                                           insertbackground=self.colors['text_primary'])
+        self.login_password_entry.pack(fill='x', pady=(0, 25), ipady=12)
         
-        # Status label
-        self.status_label = tk.Label(self.login_view, text="", font=('Helvetica', 10),
-                                   fg='#e74c3c', bg='#34495e')
-        self.status_label.pack(pady=20)
+        # Modern login button with hover effect
+        login_btn = tk.Button(login_frame, text="🚀 Access Vault", command=self.login,
+                             font=('Segoe UI', 16, 'bold'),
+                             bg=self.colors['accent_primary'], fg=self.colors['bg_primary'],
+                             relief='flat', bd=0, padx=40, pady=16,
+                             cursor='hand2', activebackground=self.colors['accent_secondary'])
+        login_btn.pack(pady=15)
+        
+        # Modern register section with card design
+        register_card = tk.Frame(forms_container, bg=self.colors['bg_tertiary'], relief='flat')
+        register_card.pack(pady=15, fill='x', padx=10)
+        
+        # Add subtle border
+        register_border = tk.Frame(register_card, height=2, bg=self.colors['success'])
+        register_border.pack(fill='x')
+        
+        register_frame = tk.Frame(register_card, bg=self.colors['bg_tertiary'])
+        register_frame.pack(padx=30, pady=25, fill='x')
+        
+        # Register header
+        register_header = tk.Label(register_frame, text="✨ Join the Vault", 
+                                  font=('Segoe UI', 20, 'bold'),
+                                  fg=self.colors['text_primary'], bg=self.colors['bg_tertiary'])
+        register_header.pack(pady=(0, 25))
+        
+        # Username field with modern styling
+        tk.Label(register_frame, text="Username:", font=('Segoe UI', 14, 'bold'),
+                fg=self.colors['text_secondary'], bg=self.colors['bg_tertiary']).pack(anchor=tk.W, pady=(0, 8))
+        self.register_username_entry = tk.Entry(register_frame, font=('Segoe UI', 14),
+                                              bg=self.colors['bg_secondary'], fg=self.colors['text_primary'],
+                                              relief='flat', bd=0, highlightthickness=2,
+                                              highlightcolor=self.colors['success'],
+                                              highlightbackground=self.colors['border'],
+                                              insertbackground=self.colors['text_primary'])
+        self.register_username_entry.pack(fill='x', pady=(0, 20), ipady=12)
+        
+        # Password field with modern styling
+        tk.Label(register_frame, text="Password:", font=('Segoe UI', 14, 'bold'),
+                fg=self.colors['text_secondary'], bg=self.colors['bg_tertiary']).pack(anchor=tk.W, pady=(0, 8))
+        self.register_password_entry = tk.Entry(register_frame, show="*", font=('Segoe UI', 14),
+                                              bg=self.colors['bg_secondary'], fg=self.colors['text_primary'],
+                                              relief='flat', bd=0, highlightthickness=2,
+                                              highlightcolor=self.colors['success'],
+                                              highlightbackground=self.colors['border'],
+                                              insertbackground=self.colors['text_primary'])
+        self.register_password_entry.pack(fill='x', pady=(0, 25), ipady=12)
+        
+        # Modern register button
+        register_btn = tk.Button(register_frame, text="🎯 Create Vault", command=self.register,
+                               font=('Segoe UI', 16, 'bold'),
+                               bg=self.colors['success'], fg=self.colors['bg_primary'],
+                               relief='flat', bd=0, padx=40, pady=16,
+                               cursor='hand2', activebackground=self.colors['crypto_purple'])
+        register_btn.pack(pady=15)
+        
+        # Modern status label
+        self.status_label = tk.Label(self.login_view, text="", font=('Segoe UI', 14),
+                                   fg=self.colors['error'], bg=self.colors['bg_secondary'])
+        self.status_label.pack(pady=30)
         
         # Bind Enter key
         self.login_password_entry.bind('<Return>', lambda e: self.login())
         self.register_password_entry.bind('<Return>', lambda e: self.register())
     
+    def create_modern_button(self, parent, text, command, style='primary', width=None, **kwargs):
+        """Create a modern blockchain-styled button"""
+        style_configs = {
+            'primary': {
+                'bg': self.colors['accent_primary'],
+                'fg': self.colors['bg_primary'],
+                'activebackground': self.colors['accent_secondary']
+            },
+            'success': {
+                'bg': self.colors['success'],
+                'fg': self.colors['bg_primary'],
+                'activebackground': self.colors['crypto_purple']
+            },
+            'warning': {
+                'bg': self.colors['warning'],
+                'fg': self.colors['bg_primary'],
+                'activebackground': self.colors['crypto_gold']
+            },
+            'danger': {
+                'bg': self.colors['error'],
+                'fg': self.colors['text_primary'],
+                'activebackground': '#cc2e3f'
+            },
+            'secondary': {
+                'bg': self.colors['bg_accent'],
+                'fg': self.colors['text_primary'],
+                'activebackground': self.colors['bg_tertiary']
+            }
+        }
+        
+        config = style_configs.get(style, style_configs['primary'])
+        
+        button = tk.Button(parent, text=text, command=command,
+                          font=('Segoe UI', 14, 'bold'),
+                          relief='flat', bd=0, cursor='hand2',
+                          padx=20, pady=12,
+                          **config, **kwargs)
+        
+        if width:
+            button.config(width=width)
+            
+        return button
+    
     def setup_logout_view(self):
-        """Setup the user profile and logout interface"""
-        self.logout_view = tk.Frame(self.auth_container, bg='#34495e')
+        """Setup the modern user profile and logout interface"""
+        self.logout_view = tk.Frame(self.inner_auth_container, bg=self.colors['bg_secondary'])
         
-        # Header with user info
-        header_frame = tk.Frame(self.logout_view, bg='#2c3e50', relief='solid', bd=2)
-        header_frame.pack(fill='x', padx=30, pady=30)
+        # Modern header with user info
+        header_frame = tk.Frame(self.logout_view, bg=self.colors['bg_tertiary'], relief='flat')
+        header_frame.pack(fill='x', padx=20, pady=30)
         
-        # Welcome title
-        welcome_label = tk.Label(header_frame, text="👋 Welcome Back!", 
-                                font=('Helvetica', 18, 'bold'),
-                                fg='#ecf0f1', bg='#2c3e50')
-        welcome_label.pack(pady=20)
+        # Add accent border
+        accent_border = tk.Frame(header_frame, height=3, bg=self.colors['crypto_gold'])
+        accent_border.pack(fill='x')
+        
+        # Header content
+        header_content = tk.Frame(header_frame, bg=self.colors['bg_tertiary'])
+        header_content.pack(padx=30, pady=25, fill='x')
+        
+                # Welcome title with blockchain styling
+        welcome_label = tk.Label(header_content, text="⚡ Vault Connected", 
+                                 font=('Segoe UI', 24, 'bold'),
+                                 fg=self.colors['crypto_gold'], bg=self.colors['bg_tertiary'])
+        welcome_label.pack(pady=(0, 20))
         
         # User info frame
         user_info_frame = tk.Frame(header_frame, bg='#2c3e50')
@@ -465,19 +634,20 @@ class SecureChatClient:
         partner_frame = tk.Frame(header_frame, bg='#34495e')
         partner_frame.pack(side='left', fill='both', expand=True)
         
-        tk.Label(partner_frame, text="💬 Chat with:", font=('Helvetica', 10, 'bold'),
-                fg='#ecf0f1', bg='#34495e').pack(side='left', padx=(10, 5))
+        tk.Label(partner_frame, text="💬 Chat with:", font=('Segoe UI', 14, 'bold'),
+                fg='#ecf0f1', bg='#34495e').pack(side='left', padx=(10, 8))
         
-        self.partner_entry = tk.Entry(partner_frame, font=('Helvetica', 10), width=20,
-                                     relief='solid', bd=1)
-        self.partner_entry.pack(side='left', padx=5)
+        self.partner_entry = tk.Entry(partner_frame, font=('Segoe UI', 14), width=18,
+                                     relief='flat', bd=0, highlightthickness=2,
+                                     highlightcolor='#3498db', insertbackground='#ecf0f1')
+        self.partner_entry.pack(side='left', padx=8, ipady=6)
         
         start_chat_btn = tk.Button(partner_frame, text="🔐 Start Secure Chat", 
                                   command=self.start_chat,
-                                  font=('Helvetica', 9, 'bold'),
+                                  font=('Segoe UI', 12, 'bold'),
                                   bg='#e67e22', fg='white',
-                                  relief='flat', padx=15, pady=5)
-        start_chat_btn.pack(side='left', padx=10)
+                                  relief='flat', padx=20, pady=8)
+        start_chat_btn.pack(side='left', padx=15)
         
         # Online users button
         online_btn = tk.Button(header_frame, text="👥 Online Users",
@@ -532,15 +702,16 @@ class SecureChatClient:
         input_frame.pack(fill='x', padx=10, pady=5)
         input_frame.pack_propagate(False)
         
-        self.message_entry = tk.Entry(input_frame, font=('Helvetica', 11),
-                                     bg='#ecf0f1', relief='solid', bd=1)
-        self.message_entry.pack(side='left', fill='both', expand=True, padx=(0, 10))
+        self.message_entry = tk.Entry(input_frame, font=('Segoe UI', 14),
+                                     bg='#ecf0f1', relief='flat', bd=0, highlightthickness=2,
+                                     highlightcolor='#27ae60', insertbackground='#2c3e50')
+        self.message_entry.pack(side='left', fill='both', expand=True, padx=(0, 15), ipady=10)
         self.message_entry.bind('<Return>', self.send_message)
         
         send_btn = tk.Button(input_frame, text="📤 Send", command=self.send_message,
-                           font=('Helvetica', 10, 'bold'),
+                           font=('Segoe UI', 14, 'bold'),
                            bg='#27ae60', fg='white',
-                           relief='flat', padx=20, pady=8)
+                           relief='flat', padx=25, pady=12)
         send_btn.pack(side='right')
         
         # Status frame
