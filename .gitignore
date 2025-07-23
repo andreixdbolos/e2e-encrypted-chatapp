@@ -1,0 +1,174 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual Environments
+venv/
+env/
+ENV/
+.venv/
+.env/
+env.bak/
+venv.bak/
+
+# Database Files
+*.db
+*.sqlite
+*.sqlite3
+secure_chat.db
+*.db-journal
+
+# Security and Cryptographic Files
+*.key
+*.pem
+*.crt
+*.p12
+*.pfx
+secrets/
+private_keys/
+certificates/
+
+# Environment Variables and Configuration
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+config.ini
+settings.conf
+
+# IDE and Editor Files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.pydevproject
+
+# Operating System Files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
+# Log Files
+*.log
+logs/
+log/
+*.log.*
+
+# Testing and Coverage
+.coverage
+.pytest_cache/
+.tox/
+.nox/
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+htmlcov/
+.cache
+nosetests.xml
+coverage/
+
+# Security Reports and Exports
+report.txt
+security_report_*.txt
+audit_*.log
+export_*.txt
+
+# Temporary Files
+*.tmp
+*.temp
+tmp/
+temp/
+*.bak
+*.backup
+*.orig
+
+# Application-specific Files
+# Message history exports
+messages_*.json
+chat_history_*.txt
+
+# Debugging Files
+debug.log
+error.log
+trace.log
+
+# Performance Test Results
+benchmark_*.txt
+performance_*.log
+
+# User Data and Session Files
+user_data/
+sessions/
+uploads/
+downloads/
+
+# Compiled Documentation
+docs/_build/
+site/
+
+# Flask/Web Framework
+instance/
+.webassets-cache
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# pyenv
+.python-version
+
+# Package manager files
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage reports
+.coverage
+.tox/
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Pyre type checker
+.pyre/
+
+# pytype static type analyzer
+.pytype/
+
+# Cython debug symbols
+cython_debug/ 
