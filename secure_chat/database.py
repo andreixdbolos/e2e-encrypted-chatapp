@@ -107,6 +107,29 @@ class Database:
             )
         ''')
         
+        # Shared files table for encrypted file sharing
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS shared_files (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                filename TEXT NOT NULL,
+                original_filename TEXT NOT NULL,
+                file_size INTEGER NOT NULL,
+                file_type TEXT,
+                encrypted_key TEXT NOT NULL,
+                file_hash TEXT NOT NULL,
+                uploader_id INTEGER,
+                recipient_id INTEGER,
+                group_id INTEGER,
+                upload_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                download_count INTEGER DEFAULT 0,
+                is_active BOOLEAN DEFAULT 1,
+                expires_at TIMESTAMP,
+                FOREIGN KEY (uploader_id) REFERENCES users (id),
+                FOREIGN KEY (recipient_id) REFERENCES users (id),
+                FOREIGN KEY (group_id) REFERENCES groups (id)
+            )
+        ''')
+        
         conn.commit()
         conn.close()
     
@@ -559,3 +582,220 @@ class Database:
             'creator_name': group[7],
             'member_count': group[8]
         } for group in groups] 
+    
+    def store_file_metadata(self, filename: str, original_filename: str, file_size: int,
+                           file_type: str, encrypted_key: str, file_hash: str,
+                           uploader_id: int, recipient_id: int = None, group_id: int = None,
+                           expires_hours: int = None) -> Optional[int]:
+        """Store file metadata in database"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            expires_at = None
+            if expires_hours:
+                from datetime import datetime, timedelta
+                expires_at = (datetime.now() + timedelta(hours=expires_hours)).isoformat()
+            
+            cursor.execute('''
+                INSERT INTO shared_files (filename, original_filename, file_size, file_type,
+                                        encrypted_key, file_hash, uploader_id, recipient_id, 
+                                        group_id, expires_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (filename, original_filename, file_size, file_type, encrypted_key, file_hash,
+                  uploader_id, recipient_id, group_id, expires_at))
+            
+            file_id = cursor.lastrowid
+            conn.commit()
+            conn.close()
+            return file_id
+        
+        except Exception as e:
+            print(f"Error storing file metadata: {e}")
+            conn.close()
+            return None
+    
+    def get_file_metadata(self, file_id: int) -> Optional[Dict]:
+        """Get file metadata by ID"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            SELECT sf.*, u.username as uploader_name
+            FROM shared_files sf
+            JOIN users u ON sf.uploader_id = u.id
+            WHERE sf.id = ? AND sf.is_active = 1
+        ''', (file_id,))
+        
+        file_data = cursor.fetchone()
+        conn.close()
+        
+        if file_data:
+            return {
+                'id': file_data[0],
+                'filename': file_data[1],
+                'original_filename': file_data[2],
+                'file_size': file_data[3],
+                'file_type': file_data[4],
+                'encrypted_key': file_data[5],
+                'file_hash': file_data[6],
+                'uploader_id': file_data[7],
+                'recipient_id': file_data[8],
+                'group_id': file_data[9],
+                'upload_timestamp': file_data[10],
+                'download_count': file_data[11],
+                'is_active': file_data[12],
+                'expires_at': file_data[13],
+                'uploader_name': file_data[14]
+            }
+        return None
+    
+    def get_user_files(self, user_id: int, include_received: bool = True) -> List[Dict]:
+        """Get files uploaded by or shared with a user"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        if include_received:
+            cursor.execute('''
+                SELECT sf.*, u.username as uploader_name
+                FROM shared_files sf
+                JOIN users u ON sf.uploader_id = u.id
+                WHERE (sf.uploader_id = ? OR sf.recipient_id = ?) 
+                AND sf.is_active = 1
+                ORDER BY sf.upload_timestamp DESC
+            ''', (user_id, user_id))
+        else:
+            cursor.execute('''
+                SELECT sf.*, u.username as uploader_name
+                FROM shared_files sf
+                JOIN users u ON sf.uploader_id = u.id
+                WHERE sf.uploader_id = ? AND sf.is_active = 1
+                ORDER BY sf.upload_timestamp DESC
+            ''', (user_id,))
+        
+        files = cursor.fetchall()
+        conn.close()
+        
+        return [{
+            'id': file_data[0],
+            'filename': file_data[1],
+            'original_filename': file_data[2],
+            'file_size': file_data[3],
+            'file_type': file_data[4],
+            'encrypted_key': file_data[5],
+            'file_hash': file_data[6],
+            'uploader_id': file_data[7],
+            'recipient_id': file_data[8],
+            'group_id': file_data[9],
+            'upload_timestamp': file_data[10],
+            'download_count': file_data[11],
+            'is_active': file_data[12],
+            'expires_at': file_data[13],
+            'uploader_name': file_data[14]
+        } for file_data in files]
+    
+    def get_group_files(self, group_id: int) -> List[Dict]:
+        """Get files shared in a group"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            SELECT sf.*, u.username as uploader_name
+            FROM shared_files sf
+            JOIN users u ON sf.uploader_id = u.id
+            WHERE sf.group_id = ? AND sf.is_active = 1
+            ORDER BY sf.upload_timestamp DESC
+        ''', (group_id,))
+        
+        files = cursor.fetchall()
+        conn.close()
+        
+        return [{
+            'id': file_data[0],
+            'filename': file_data[1],
+            'original_filename': file_data[2],
+            'file_size': file_data[3],
+            'file_type': file_data[4],
+            'encrypted_key': file_data[5],
+            'file_hash': file_data[6],
+            'uploader_id': file_data[7],
+            'recipient_id': file_data[8],
+            'group_id': file_data[9],
+            'upload_timestamp': file_data[10],
+            'download_count': file_data[11],
+            'is_active': file_data[12],
+            'expires_at': file_data[13],
+            'uploader_name': file_data[14]
+        } for file_data in files]
+    
+    def increment_download_count(self, file_id: int):
+        """Increment download counter for a file"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            UPDATE shared_files 
+            SET download_count = download_count + 1 
+            WHERE id = ?
+        ''', (file_id,))
+        
+        conn.commit()
+        conn.close()
+    
+    def deactivate_file(self, file_id: int, user_id: int) -> bool:
+        """Deactivate/delete a file (only uploader can do this)"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            cursor.execute('''
+                UPDATE shared_files 
+                SET is_active = 0 
+                WHERE id = ? AND uploader_id = ?
+            ''', (file_id, user_id))
+            
+            affected_rows = cursor.rowcount
+            conn.commit()
+            conn.close()
+            return affected_rows > 0
+        
+        except Exception:
+            conn.close()
+            return False
+    
+    def cleanup_expired_files(self) -> int:
+        """Remove expired files and return count"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        from datetime import datetime
+        now = datetime.now().isoformat()
+        
+        cursor.execute('''
+            UPDATE shared_files 
+            SET is_active = 0 
+            WHERE expires_at IS NOT NULL AND expires_at < ? AND is_active = 1
+        ''', (now,))
+        
+        expired_count = cursor.rowcount
+        conn.commit()
+        conn.close()
+        return expired_count
+    
+    def can_access_file(self, file_id: int, user_id: int) -> bool:
+        """Check if user can access a specific file"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        # Check if user is uploader, recipient, or member of the group
+        cursor.execute('''
+            SELECT sf.id
+            FROM shared_files sf
+            LEFT JOIN group_members gm ON sf.group_id = gm.group_id
+            WHERE sf.id = ? AND sf.is_active = 1 
+            AND (sf.uploader_id = ? OR sf.recipient_id = ? OR gm.user_id = ?)
+        ''', (file_id, user_id, user_id, user_id))
+        
+        result = cursor.fetchone()
+        conn.close()
+        return result is not None 

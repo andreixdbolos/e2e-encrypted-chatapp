@@ -53,6 +53,10 @@ class SecureChatClient:
         self.current_group = None  # Currently active group for messaging
         self.group_members = {}  # group_id -> list of members
         
+        # File state
+        self.user_files = []  # List of user's files
+        self.current_upload_progress = {}  # file_id -> progress info
+        
         # Socket.IO client
         self.sio = socketio.Client()
         self.setup_socketio_handlers()
@@ -99,6 +103,9 @@ class SecureChatClient:
         self.notebook = ttk.Notebook(main_frame)
         self.notebook.pack(fill=tk.BOTH, expand=True)
         
+        # Bind tab change event to refresh data when needed
+        self.notebook.bind("<<NotebookTabChanged>>", self.on_tab_changed)
+        
         # Authentication tab
         self.auth_frame = tk.Frame(self.notebook, bg='#34495e')
         self.notebook.add(self.auth_frame, text="🔐 Login/Register")
@@ -114,15 +121,21 @@ class SecureChatClient:
         self.notebook.add(self.groups_frame, text="👥 Groups")
         self.setup_groups_ui()
         
+        # Files tab
+        self.files_frame = tk.Frame(self.notebook, bg='#2c3e50')
+        self.notebook.add(self.files_frame, text="📁 Files")
+        self.setup_files_ui()
+        
         # Security tab
         self.security_frame = tk.Frame(self.notebook, bg='#34495e')
         self.notebook.add(self.security_frame, text="🔒 Security")
         self.setup_security_ui()
         
-        # Initially disable chat, groups and security tabs
+        # Initially disable chat, groups, files and security tabs
         self.notebook.tab(1, state='disabled')
         self.notebook.tab(2, state='disabled')
         self.notebook.tab(3, state='disabled')
+        self.notebook.tab(4, state='disabled')
     
     def setup_auth_ui(self):
         """Setup authentication interface with modern design"""
@@ -361,6 +374,10 @@ class SecureChatClient:
                 self.current_group = None
                 self.group_members.clear()
                 
+                # Clear file state
+                self.user_files.clear()
+                self.current_upload_progress.clear()
+                
                 # Reset crypto state
                 self.crypto = CryptoCore()
                 
@@ -421,6 +438,7 @@ class SecureChatClient:
                 self.notebook.tab(1, state='disabled')
                 self.notebook.tab(2, state='disabled')
                 self.notebook.tab(3, state='disabled')
+                self.notebook.tab(4, state='disabled')
                 
                 # Show login view and switch to auth tab
                 self.show_login_view()
@@ -743,6 +761,166 @@ class SecureChatClient:
                                           fg='#95a5a6', bg='#2c3e50')
         self.group_status_label.pack(side='left')
     
+    def setup_files_ui(self):
+        """Setup file sharing and management interface"""
+        # Create horizontal paned window for file actions and file list
+        main_paned = tk.PanedWindow(self.files_frame, orient='horizontal', bg='#2c3e50')
+        main_paned.pack(fill='both', expand=True, padx=10, pady=10)
+        
+        # Left panel: File actions
+        actions_panel = tk.Frame(main_paned, bg='#34495e', width=300)
+        main_paned.add(actions_panel, minsize=250)
+        
+        # File actions header
+        actions_header = tk.Frame(actions_panel, bg='#2c3e50')
+        actions_header.pack(fill='x', padx=10, pady=10)
+        
+        actions_title = tk.Label(actions_header, text="📁 File Sharing", 
+                                font=('Helvetica', 14, 'bold'),
+                                fg='#ecf0f1', bg='#2c3e50')
+        actions_title.pack()
+        
+        # Upload section
+        upload_frame = tk.LabelFrame(actions_panel, text="📤 Upload File", 
+                                    font=('Helvetica', 12, 'bold'),
+                                    fg='#ecf0f1', bg='#34495e',
+                                    padx=15, pady=15)
+        upload_frame.pack(fill='x', padx=10, pady=10)
+        
+        # File selection
+        self.selected_file_label = tk.Label(upload_frame, text="No file selected", 
+                                           font=('Helvetica', 10),
+                                           fg='#95a5a6', bg='#34495e')
+        self.selected_file_label.pack(pady=5)
+        
+        select_file_btn = tk.Button(upload_frame, text="📂 Select File", 
+                                   command=self.select_file_for_upload,
+                                   font=('Helvetica', 10, 'bold'),
+                                   bg='#3498db', fg='white',
+                                   relief='flat', padx=20, pady=8)
+        select_file_btn.pack(pady=5)
+        
+        # Sharing options
+        sharing_frame = tk.Frame(upload_frame, bg='#34495e')
+        sharing_frame.pack(fill='x', pady=10)
+        
+        # Share type selection
+        self.share_type = tk.StringVar(value="user")
+        
+        tk.Label(sharing_frame, text="Share with:", font=('Helvetica', 10),
+                fg='#ecf0f1', bg='#34495e').pack(anchor='w')
+        
+        radio_frame = tk.Frame(sharing_frame, bg='#34495e')
+        radio_frame.pack(fill='x', pady=5)
+        
+        tk.Radiobutton(radio_frame, text="User", variable=self.share_type, value="user",
+                      font=('Helvetica', 9), fg='#ecf0f1', bg='#34495e',
+                      selectcolor='#2c3e50', command=self.update_share_options).pack(side='left', padx=5)
+        
+        tk.Radiobutton(radio_frame, text="Group", variable=self.share_type, value="group",
+                      font=('Helvetica', 9), fg='#ecf0f1', bg='#34495e',
+                      selectcolor='#2c3e50', command=self.update_share_options).pack(side='left', padx=5)
+        
+        # Target selection
+        self.target_frame = tk.Frame(sharing_frame, bg='#34495e')
+        self.target_frame.pack(fill='x', pady=5)
+        
+        self.target_label = tk.Label(self.target_frame, text="Username:", 
+                                    font=('Helvetica', 10),
+                                    fg='#ecf0f1', bg='#34495e')
+        self.target_label.pack(anchor='w')
+        
+        self.target_entry = tk.Entry(self.target_frame, font=('Helvetica', 10), width=25)
+        self.target_entry.pack(fill='x', pady=2)
+        
+        # Expiry options
+        expiry_frame = tk.Frame(upload_frame, bg='#34495e')
+        expiry_frame.pack(fill='x', pady=5)
+        
+        tk.Label(expiry_frame, text="Expires after:", font=('Helvetica', 10),
+                fg='#ecf0f1', bg='#34495e').pack(anchor='w')
+        
+        self.expiry_var = tk.StringVar(value="never")
+        expiry_options = tk.Frame(expiry_frame, bg='#34495e')
+        expiry_options.pack(fill='x', pady=2)
+        
+        for value, text in [("never", "Never"), ("24", "24 hours"), ("168", "1 week")]:
+            tk.Radiobutton(expiry_options, text=text, variable=self.expiry_var, value=value,
+                          font=('Helvetica', 9), fg='#ecf0f1', bg='#34495e',
+                          selectcolor='#2c3e50').pack(side='left', padx=5)
+        
+        # Upload button
+        self.upload_btn = tk.Button(upload_frame, text="🚀 Upload & Share", 
+                                   command=self.upload_file,
+                                   font=('Helvetica', 11, 'bold'),
+                                   bg='#27ae60', fg='white',
+                                   relief='flat', padx=20, pady=10,
+                                   state='disabled')
+        self.upload_btn.pack(pady=10)
+        
+        # Progress bar
+        self.upload_progress = tk.Frame(upload_frame, bg='#34495e')
+        self.upload_progress_bar = tk.Canvas(self.upload_progress, height=20, bg='#2c3e50')
+        self.upload_progress_label = tk.Label(self.upload_progress, text="", 
+                                             font=('Helvetica', 9),
+                                             fg='#ecf0f1', bg='#34495e')
+        
+        # Right panel: File list
+        files_panel = tk.Frame(main_paned, bg='#2c3e50')
+        main_paned.add(files_panel, minsize=400)
+        
+        # Files header
+        files_header = tk.Frame(files_panel, bg='#34495e', height=60)
+        files_header.pack(fill='x', padx=10, pady=(10, 5))
+        files_header.pack_propagate(False)
+        
+        files_title = tk.Label(files_header, text="📂 My Files", 
+                              font=('Helvetica', 14, 'bold'),
+                              fg='#ecf0f1', bg='#34495e')
+        files_title.pack(side='left', padx=10, pady=15)
+        
+        # File actions buttons
+        file_actions_frame = tk.Frame(files_header, bg='#34495e')
+        file_actions_frame.pack(side='right', padx=10, pady=10)
+        
+        refresh_files_btn = tk.Button(file_actions_frame, text="🔄 Refresh", 
+                                     command=self.refresh_files,
+                                     font=('Helvetica', 9),
+                                     bg='#95a5a6', fg='white',
+                                     relief='flat', padx=10, pady=5)
+        refresh_files_btn.pack(side='left', padx=2)
+        
+        # Files list
+        files_list_frame = tk.Frame(files_panel, bg='#2c3e50')
+        files_list_frame.pack(fill='both', expand=True, padx=10, pady=5)
+        
+        # Create scrollable files list
+        self.files_canvas = tk.Canvas(files_list_frame, bg='#1a252f', highlightthickness=0)
+        files_scrollbar = tk.Scrollbar(files_list_frame, orient='vertical', command=self.files_canvas.yview)
+        self.files_scrollable_frame = tk.Frame(self.files_canvas, bg='#1a252f')
+        
+        self.files_scrollable_frame.bind(
+            "<Configure>",
+            lambda e: self.files_canvas.configure(scrollregion=self.files_canvas.bbox("all"))
+        )
+        
+        self.files_canvas.create_window((0, 0), window=self.files_scrollable_frame, anchor="nw")
+        self.files_canvas.configure(yscrollcommand=files_scrollbar.set)
+        
+        files_scrollbar.pack(side="right", fill="y")
+        self.files_canvas.pack(side="left", fill="both", expand=True)
+        
+        # Initially show "no files" message
+        self.no_files_label = tk.Label(self.files_scrollable_frame, 
+                                      text="No files yet\nUpload a file to get started!", 
+                                      font=('Helvetica', 11),
+                                      fg='#95a5a6', bg='#1a252f',
+                                      justify='center')
+        self.no_files_label.pack(pady=50)
+        
+        # File storage for upload
+        self.selected_file_path = None
+    
     def setup_socketio_handlers(self):
         """Setup Socket.IO event handlers with enhanced security"""
         
@@ -1028,6 +1206,82 @@ class SecureChatClient:
             except Exception as e:
                 print(f"Error handling group info: {str(e)}")
                 messagebox.showerror("Error", f"Failed to display group info: {str(e)}")
+        
+        # File sharing socket handlers
+        
+        @self.sio.event
+        def file_shared(data):
+            """Handle file shared notification"""
+            try:
+                uploader = data['uploader']
+                filename = data['filename']
+                file_size = self.format_file_size(data['file_size'])
+                
+                # Show notification
+                messagebox.showinfo("File Shared", 
+                                  f"{uploader} shared a file with you:\n\n{filename} ({file_size})\n\nCheck the Files tab to download it.")
+                
+                # Refresh files list if Files tab is visible
+                current_tab = self.notebook.index(self.notebook.select())
+                if current_tab == 3:  # Files tab
+                    self.refresh_files()
+                
+                self.auditor.log_security_event("FILE_RECEIVED", f"Received file: {filename} from {uploader}")
+            
+            except Exception as e:
+                print(f"Error handling file shared: {str(e)}")
+        
+        @self.sio.event
+        def file_shared_group(data):
+            """Handle group file shared notification"""
+            try:
+                uploader = data['uploader']
+                filename = data['filename']
+                group_id = data['group_id']
+                file_size = self.format_file_size(data['file_size'])
+                
+                # Find group name
+                group_name = "Unknown Group"
+                for group in self.user_groups:
+                    if group['id'] == group_id:
+                        group_name = group['name']
+                        break
+                
+                # Show notification if not from current user
+                if uploader != self.username:
+                    messagebox.showinfo("Group File Shared", 
+                                      f"{uploader} shared a file in {group_name}:\n\n{filename} ({file_size})\n\nCheck the Files tab to download it.")
+                
+                # Refresh files list if Files tab is visible
+                current_tab = self.notebook.index(self.notebook.select())
+                if current_tab == 3:  # Files tab
+                    self.refresh_files()
+                
+                self.auditor.log_security_event("GROUP_FILE_RECEIVED", 
+                                               f"Received group file: {filename} from {uploader} in {group_name}")
+            
+            except Exception as e:
+                print(f"Error handling group file shared: {str(e)}")
+        
+        @self.sio.event
+        def user_files(data):
+            """Handle user files response"""
+            try:
+                files = data['files']
+                self.user_files = files
+                self.display_files()
+            except Exception as e:
+                print(f"Error handling user files: {str(e)}")
+        
+        @self.sio.event
+        def group_files(data):
+            """Handle group files response"""
+            try:
+                files = data['files']
+                # Could be used for group-specific file management
+                print(f"Received {len(files)} group files")
+            except Exception as e:
+                print(f"Error handling group files: {str(e)}")
     
     def display_online_users_popup(self, users: List[str], timestamp: str):
         """Display online users in a popup window"""
@@ -1221,6 +1475,28 @@ class SecureChatClient:
         # Emit request for online users
         self.sio.emit('get_online_users')
     
+    def on_tab_changed(self, event):
+        """Handle tab change events to refresh data when needed"""
+        if not self.token:  # Not logged in
+            return
+        
+        try:
+            selected_tab = self.notebook.index("current")
+            
+            # Files tab selected (index 3)
+            if selected_tab == 3:
+                # Refresh groups first (needed for group files), then refresh files
+                self.refresh_groups()
+                # Small delay to ensure groups are loaded before fetching files
+                self.root.after(100, self.refresh_files)
+            
+            # Groups tab selected (index 2)
+            elif selected_tab == 2:
+                self.refresh_groups()
+                
+        except Exception as e:
+            print(f"Error handling tab change: {e}")
+    
     def login(self):
         """Handle user login with enhanced validation"""
         username = self.sanitizer.sanitize_username(self.login_username_entry.get())
@@ -1252,6 +1528,7 @@ class SecureChatClient:
                 self.notebook.tab(1, state='normal')
                 self.notebook.tab(2, state='normal')
                 self.notebook.tab(3, state='normal') # Enable Groups tab
+                self.notebook.tab(4, state='normal') # Enable Files tab
                 
                 self.chat_status_label.config(text=f"Logged in as {username}", fg='#27ae60')
                 self.auditor.log_security_event("LOGIN_SUCCESS", f"User {username} logged in")
@@ -1265,6 +1542,9 @@ class SecureChatClient:
                 
                 # Load user's groups
                 self.refresh_groups()
+                
+                # Load user's files
+                self.refresh_files()
                 
             else:
                 error_msg = response.json().get('error', 'Login failed')
@@ -2361,3 +2641,551 @@ class SecureChatClient:
         except:
             pass
         self.root.destroy() 
+    
+    # File Management Methods
+    
+    def select_file_for_upload(self):
+        """Open file dialog to select a file for upload"""
+        from tkinter import filedialog
+        
+        file_path = filedialog.askopenfilename(
+            title="Select file to upload",
+            filetypes=[
+                ("All supported", "*.txt *.pdf *.doc *.docx *.jpg *.jpeg *.png *.gif *.mp4 *.mp3 *.wav *.zip *.tar *.gz *.py *.js *.html *.css *.json *.xml *.csv *.xlsx *.pptx"),
+                ("Text files", "*.txt"),
+                ("Documents", "*.pdf *.doc *.docx"),
+                ("Images", "*.jpg *.jpeg *.png *.gif"),
+                ("Media", "*.mp4 *.mp3 *.wav"),
+                ("Archives", "*.zip *.tar *.gz"),
+                ("Code", "*.py *.js *.html *.css *.json *.xml"),
+                ("Spreadsheets", "*.csv *.xlsx"),
+                ("Presentations", "*.pptx"),
+                ("All files", "*.*")
+            ]
+        )
+        
+        if file_path:
+            self.selected_file_path = file_path
+            filename = os.path.basename(file_path)
+            
+            # Check file size (50MB limit)
+            file_size = os.path.getsize(file_path)
+            if file_size > 50 * 1024 * 1024:
+                messagebox.showerror("Error", "File too large (max 50MB)")
+                return
+            
+            # Format file size for display
+            if file_size < 1024:
+                size_str = f"{file_size} B"
+            elif file_size < 1024 * 1024:
+                size_str = f"{file_size / 1024:.1f} KB"
+            else:
+                size_str = f"{file_size / (1024 * 1024):.1f} MB"
+            
+            self.selected_file_label.config(
+                text=f"📄 {filename}\n📊 Size: {size_str}",
+                fg='#27ae60'
+            )
+            self.upload_btn.config(state='normal')
+        else:
+            self.selected_file_path = None
+            self.selected_file_label.config(text="No file selected", fg='#95a5a6')
+            self.upload_btn.config(state='disabled')
+    
+    def update_share_options(self):
+        """Update sharing options based on selected type"""
+        share_type = self.share_type.get()
+        
+        if share_type == "user":
+            self.target_label.config(text="Username:")
+            self.target_entry.delete(0, tk.END)
+        else:  # group
+            self.target_label.config(text="Group name:")
+            self.target_entry.delete(0, tk.END)
+            
+            # Show available groups
+            if self.user_groups:
+                # Create dropdown-like behavior
+                groups_text = ", ".join([group['name'] for group in self.user_groups])
+                messagebox.showinfo("Available Groups", f"Your groups: {groups_text}")
+    
+    def upload_file(self):
+        """Upload selected file with encryption"""
+        if not self.selected_file_path:
+            messagebox.showwarning("Warning", "Please select a file first")
+            return
+        
+        share_type = self.share_type.get()
+        target = self.target_entry.get().strip()
+        
+        if not target:
+            target_type = "username" if share_type == "user" else "group name"
+            messagebox.showwarning("Warning", f"Please enter a {target_type}")
+            return
+        
+        # Check if sharing with user requires active session
+        if share_type == "user":
+            if not self.current_chat_partner or self.current_chat_partner.lower() != target.lower():
+                messagebox.showerror("Session Required", 
+                                   f"To share files with '{target}', you need an active chat session.\n\n"
+                                   f"Please:\n"
+                                   f"1. Go to the Chat tab\n"
+                                   f"2. Start a secure chat with '{target}'\n"
+                                   f"3. Wait for them to accept\n"
+                                   f"4. Then return to upload files")
+                return
+            
+            # Check if we have a valid session key
+            if not self.crypto.root_key:
+                messagebox.showerror("Session Error", 
+                                   f"No active encryption session with '{target}'.\n"
+                                   f"Please establish a secure chat session first.")
+                return
+        
+        # Validate expiry
+        expiry_hours = None
+        if self.expiry_var.get() != "never":
+            expiry_hours = int(self.expiry_var.get())
+        
+        try:
+            # Show progress
+            self.show_upload_progress("Preparing upload...")
+            self.upload_btn.config(state='disabled')
+            
+            # Prepare upload data
+            with open(self.selected_file_path, 'rb') as f:
+                file_data = f.read()
+            
+            headers = {'Authorization': f'Bearer {self.token}'}
+            
+            # Prepare form data
+            files = {'file': (os.path.basename(self.selected_file_path), file_data)}
+            form_data = {}
+            
+            if share_type == "user":
+                form_data['recipient'] = target
+            else:
+                # Find group ID by name
+                group_id = None
+                for group in self.user_groups:
+                    if group['name'].lower() == target.lower():
+                        group_id = group['id']
+                        break
+                
+                if not group_id:
+                    messagebox.showerror("Error", f"Group '{target}' not found in your groups")
+                    self.hide_upload_progress()
+                    return
+                
+                form_data['group_id'] = str(group_id)
+            
+            if expiry_hours:
+                form_data['expires_hours'] = str(expiry_hours)
+            
+            self.update_upload_progress("Encrypting file...", 30)
+            
+            # Encrypt file on client side for end-to-end encryption
+            try:
+                # Generate file key and encrypt file
+                encrypted_data, nonce, file_key = self.crypto.encrypt_file(file_data)
+                
+                # Generate file hash for integrity
+                file_hash = self.crypto.hash_file(file_data)
+                
+                self.update_upload_progress("Encrypting file key...", 40)
+                
+                # Encrypt file key based on sharing type
+                if share_type == "user":
+                    # Use session key for user sharing
+                    encrypted_file_key, key_nonce = self.crypto.encrypt_file_key(file_key)
+                else:
+                    # Use group key for group sharing  
+                    encrypted_file_key, key_nonce = self.crypto.encrypt_file_key_for_group(file_key, group_id)
+                
+                # Prepare encrypted data for upload
+                encrypted_key_data = base64.b64encode(encrypted_file_key + key_nonce).decode()
+                
+                self.update_upload_progress("Uploading encrypted file...", 60)
+                
+                # Prepare encrypted file for upload (nonce + encrypted data)
+                encrypted_file_data = nonce + encrypted_data
+                files = {'file': (os.path.basename(self.selected_file_path), encrypted_file_data)}
+                
+                # Add encryption metadata to form data
+                form_data['encrypted_key'] = encrypted_key_data
+                form_data['file_hash'] = file_hash
+                form_data['client_encrypted'] = 'true'  # Flag to tell server file is already encrypted
+                
+            except Exception as e:
+                messagebox.showerror("Encryption Error", f"Failed to encrypt file: {str(e)}")
+                self.hide_upload_progress()
+                return
+            
+            # Upload encrypted file
+            response = requests.post(f'{self.server_url}/api/files/upload',
+                                   files=files, data=form_data, headers=headers, timeout=60)
+            
+            if response.status_code == 201:
+                data = response.json()
+                self.update_upload_progress("Upload completed!", 100)
+                
+                messagebox.showinfo("Success", 
+                                  f"File '{os.path.basename(self.selected_file_path)}' uploaded successfully!")
+                
+                # Reset form
+                self.selected_file_path = None
+                self.selected_file_label.config(text="No file selected", fg='#95a5a6')
+                self.target_entry.delete(0, tk.END)
+                self.upload_btn.config(state='disabled')
+                
+                # Refresh file list
+                self.refresh_files()
+                
+                # Log the upload
+                self.auditor.log_security_event("FILE_UPLOADED", 
+                                               f"File uploaded and shared with {target}")
+                
+                # Hide progress after delay
+                self.root.after(2000, self.hide_upload_progress)
+            else:
+                error_msg = response.json().get('error', 'Upload failed')
+                messagebox.showerror("Upload Failed", error_msg)
+                self.hide_upload_progress()
+        
+        except requests.exceptions.RequestException as e:
+            messagebox.showerror("Error", f"Network error: {str(e)}")
+            self.hide_upload_progress()
+        except Exception as e:
+            messagebox.showerror("Error", f"Upload failed: {str(e)}")
+            self.hide_upload_progress()
+        finally:
+            self.upload_btn.config(state='normal')
+    
+    def refresh_files(self):
+        """Refresh the list of user files and group files"""
+        try:
+            headers = {'Authorization': f'Bearer {self.token}'}
+            all_files = []
+            
+            # Fetch user files
+            response = requests.get(f'{self.server_url}/api/files', headers=headers, timeout=10)
+            if response.status_code == 200:
+                data = response.json()
+                user_files = data['files']
+                # Mark as user files
+                for file_info in user_files:
+                    file_info['file_source'] = 'user'
+                    file_info['source_name'] = 'Personal'
+                all_files.extend(user_files)
+            else:
+                print("Failed to fetch user files")
+            
+            # Fetch group files for each group the user is a member of
+            if hasattr(self, 'user_groups') and self.user_groups and isinstance(self.user_groups, list):
+                for group in self.user_groups:
+                    try:
+                        group_id = group['id']
+                        group_name = group['name']
+                        
+                        response = requests.get(f'{self.server_url}/api/groups/{group_id}/files', 
+                                              headers=headers, timeout=10)
+                        
+                        if response.status_code == 200:
+                            data = response.json()
+                            group_files = data['files']
+                            # Mark as group files
+                            for file_info in group_files:
+                                file_info['file_source'] = 'group'
+                                file_info['source_name'] = f"Group: {group_name}"
+                                file_info['group_id'] = group_id
+                                file_info['group_name'] = group_name
+                            all_files.extend(group_files)
+                        else:
+                            print(f"Failed to fetch files for group {group_name}")
+                    
+                    except Exception as e:
+                        print(f"Error fetching files for group {group.get('name', 'Unknown')}: {e}")
+            
+            # Store combined files and display
+            self.user_files = all_files
+            self.display_files()
+        
+        except requests.exceptions.RequestException as e:
+            print(f"Error fetching files: {e}")
+        except Exception as e:
+            print(f"Unexpected error refreshing files: {e}")
+    
+    def show_upload_progress(self, message: str):
+        """Show upload progress indicator"""
+        self.upload_progress.pack(fill='x', pady=5)
+        self.upload_progress_bar.pack(fill='x')
+        self.upload_progress_label.pack()
+        self.upload_progress_label.config(text=message)
+        
+        # Draw progress bar background
+        self.upload_progress_bar.delete("all")
+        self.upload_progress_bar.create_rectangle(0, 0, 200, 20, fill='#2c3e50', outline='#34495e')
+    
+    def update_upload_progress(self, message: str, progress: int):
+        """Update upload progress"""
+        self.upload_progress_label.config(text=message)
+        
+        # Update progress bar
+        self.upload_progress_bar.delete("all")
+        self.upload_progress_bar.create_rectangle(0, 0, 200, 20, fill='#2c3e50', outline='#34495e')
+        
+        if progress > 0:
+            width = int((progress / 100) * 200)
+            color = '#27ae60' if progress == 100 else '#3498db'
+            self.upload_progress_bar.create_rectangle(0, 0, width, 20, fill=color, outline='')
+    
+    def hide_upload_progress(self):
+        """Hide upload progress indicator"""
+        self.upload_progress.pack_forget()
+    
+    def display_files(self):
+        """Display user files in the files list"""
+        # Clear existing files
+        for widget in self.files_scrollable_frame.winfo_children():
+            widget.destroy()
+        
+        if self.user_files:
+            for i, file_info in enumerate(self.user_files):
+                self.create_file_item(self.files_scrollable_frame, file_info, i)
+        else:
+            self.no_files_label = tk.Label(self.files_scrollable_frame, 
+                                          text="No files yet\nUpload a file to get started!", 
+                                          font=('Helvetica', 11),
+                                          fg='#95a5a6', bg='#1a252f',
+                                          justify='center')
+            self.no_files_label.pack(pady=50)
+    
+    def create_file_item(self, parent: tk.Widget, file_info: Dict, index: int):
+        """Create a file item in the files list"""
+        # Alternate colors
+        bg_color = '#2c3e50' if index % 2 == 0 else '#34495e'
+        
+        file_frame = tk.Frame(parent, bg=bg_color, relief='solid', bd=1)
+        file_frame.pack(fill='x', pady=2, padx=5)
+        
+        # File info
+        info_frame = tk.Frame(file_frame, bg=bg_color)
+        info_frame.pack(side='left', fill='both', expand=True, padx=15, pady=12)
+        
+        # File name and type
+        file_icon = self.get_file_icon(file_info['file_type'])
+        name_label = tk.Label(info_frame, text=f"{file_icon} {file_info['original_filename']}", 
+                             font=('Helvetica', 11, 'bold'),
+                             fg='#ecf0f1', bg=bg_color)
+        name_label.pack(anchor='w')
+        
+        # File details
+        file_size = self.format_file_size(file_info['file_size'])
+        upload_date = datetime.fromisoformat(file_info['upload_timestamp']).strftime('%Y-%m-%d %H:%M')
+        
+        details_text = f"📊 {file_size} • 📅 {upload_date}"
+        if file_info['download_count'] > 0:
+            details_text += f" • ⬇️ {file_info['download_count']} downloads"
+        
+        # Show file source (Personal vs Group)
+        if file_info.get('file_source') == 'group':
+            details_text += f" • 👥 {file_info.get('source_name', 'Group')}"
+        elif file_info.get('file_source') == 'user':
+            details_text += f" • 👤 {file_info.get('source_name', 'Personal')}"
+        else:
+            # Fallback for legacy file detection
+            if file_info.get('recipient_id'):
+                details_text += " • 👤 Personal"
+            elif file_info.get('group_id'):
+                details_text += " • 👥 Group"
+        
+        details_label = tk.Label(info_frame, text=details_text, 
+                                font=('Helvetica', 9),
+                                fg='#bdc3c7', bg=bg_color)
+        details_label.pack(anchor='w')
+        
+        # Action buttons
+        actions_frame = tk.Frame(file_frame, bg=bg_color)
+        actions_frame.pack(side='right', padx=10, pady=10)
+        
+        # Download button
+        download_btn = tk.Button(actions_frame, text="⬇️", 
+                                command=lambda f=file_info: self.download_file(f),
+                                font=('Helvetica', 10, 'bold'),
+                                bg='#3498db', fg='white',
+                                relief='flat', padx=8, pady=5)
+        download_btn.pack(side='left', padx=2)
+        
+        # Delete button (only for uploader)
+        if file_info['uploader_name'] == self.username:
+            delete_btn = tk.Button(actions_frame, text="🗑️", 
+                                  command=lambda f=file_info: self.delete_file(f),
+                                  font=('Helvetica', 10, 'bold'),
+                                  bg='#e74c3c', fg='white',
+                                  relief='flat', padx=8, pady=5)
+            delete_btn.pack(side='left', padx=2)
+    
+    def get_file_icon(self, file_type: str) -> str:
+        """Get appropriate icon for file type"""
+        if not file_type:
+            return "📄"
+        
+        type_icons = {
+            'image': "🖼️",
+            'video': "🎥", 
+            'audio': "🎵",
+            'text': "📝",
+            'application/pdf': "📕",
+            'application/zip': "📦",
+            'application/json': "📋"
+        }
+        
+        for key, icon in type_icons.items():
+            if key in file_type.lower():
+                return icon
+        
+        return "📄"
+    
+    def format_file_size(self, size: int) -> str:
+        """Format file size in human readable format"""
+        if size < 1024:
+            return f"{size} B"
+        elif size < 1024 * 1024:
+            return f"{size / 1024:.1f} KB"
+        else:
+            return f"{size / (1024 * 1024):.1f} MB"
+    
+    def download_file(self, file_info: Dict):
+        """Download and decrypt a file"""
+        try:
+            # Ask where to save the file
+            from tkinter import filedialog
+            save_path = filedialog.asksaveasfilename(
+                defaultextension="",
+                initialdir=os.path.expanduser("~/Downloads"),
+                initialfile=file_info['original_filename'],
+                title="Save file as"
+            )
+            
+            if not save_path:
+                return
+            
+            # Download file
+            headers = {'Authorization': f'Bearer {self.token}'}
+            response = requests.get(f"{self.server_url}/api/files/{file_info['id']}/download",
+                                  headers=headers, timeout=60)
+            
+            if response.status_code == 200:
+                # Check if this is a client-encrypted file (JSON response) or legacy file (binary)
+                content_type = response.headers.get('content-type', '')
+                
+                if 'application/json' in content_type:
+                    # Client-encrypted file - decrypt on client side
+                    data = response.json()
+                    
+                    if not data.get('client_encrypted'):
+                        messagebox.showerror("Error", "Unexpected response format")
+                        return
+                    
+                    try:
+                        # Decrypt file on client side
+                        encrypted_file_data = base64.b64decode(data['encrypted_file_data'])
+                        encrypted_key_data = base64.b64decode(data['encrypted_key'])
+                        
+                        # Extract nonce and encrypted data
+                        nonce = encrypted_file_data[:12]
+                        encrypted_data = encrypted_file_data[12:]
+                        
+                        # Extract encrypted file key and key nonce
+                        encrypted_file_key = encrypted_key_data[:-12]
+                        key_nonce = encrypted_key_data[-12:]
+                        
+                        # Decrypt file key based on sharing type
+                        if file_info.get('group_id'):
+                            # Group file
+                            file_key = self.crypto.decrypt_file_key_for_group(
+                                encrypted_file_key, key_nonce, file_info['group_id']
+                            )
+                        else:
+                            # User file - use current session key
+                            file_key = self.crypto.decrypt_file_key(encrypted_file_key, key_nonce)
+                        
+                        # Decrypt file data
+                        decrypted_data = self.crypto.decrypt_file(encrypted_data, nonce, file_key)
+                        
+                        # Verify file integrity
+                        if not self.crypto.verify_file_hash(decrypted_data, data['file_hash']):
+                            messagebox.showerror("Error", "File integrity check failed")
+                            return
+                        
+                        # Save decrypted file
+                        with open(save_path, 'wb') as f:
+                            f.write(decrypted_data)
+                        
+                        messagebox.showinfo("Success", f"File downloaded and decrypted to:\n{save_path}")
+                        
+                    except Exception as e:
+                        messagebox.showerror("Decryption Error", f"Failed to decrypt file: {str(e)}")
+                        return
+                else:
+                    # Legacy server-decrypted file (binary response)
+                    with open(save_path, 'wb') as f:
+                        for chunk in response.iter_content(chunk_size=8192):
+                            f.write(chunk)
+                    
+                    messagebox.showinfo("Success", f"File downloaded to:\n{save_path}")
+                
+                self.auditor.log_security_event("FILE_DOWNLOADED", 
+                                               f"Downloaded file: {file_info['original_filename']}")
+            else:
+                error_msg = response.json().get('error', 'Download failed')
+                messagebox.showerror("Download Failed", error_msg)
+        
+        except requests.exceptions.RequestException as e:
+            messagebox.showerror("Error", f"Network error: {str(e)}")
+        except Exception as e:
+            messagebox.showerror("Error", f"Download failed: {str(e)}")
+    
+    def delete_file(self, file_info: Dict):
+        """Delete a file"""
+        if messagebox.askyesno("Confirm Delete", 
+                              f"Are you sure you want to delete '{file_info['original_filename']}'?\n\nThis action cannot be undone."):
+            try:
+                headers = {'Authorization': f'Bearer {self.token}'}
+                response = requests.delete(f"{self.server_url}/api/files/{file_info['id']}",
+                                         headers=headers, timeout=10)
+                
+                if response.status_code == 200:
+                    messagebox.showinfo("Success", "File deleted successfully")
+                    self.refresh_files()
+                    self.auditor.log_security_event("FILE_DELETED", 
+                                                   f"Deleted file: {file_info['original_filename']}")
+                else:
+                    error_msg = response.json().get('error', 'Delete failed')
+                    messagebox.showerror("Delete Failed", error_msg)
+            
+            except requests.exceptions.RequestException as e:
+                messagebox.showerror("Error", f"Network error: {str(e)}")
+            except Exception as e:
+                messagebox.showerror("Error", f"Delete failed: {str(e)}")
+    
+    def export_security_report(self):
+        """Export security report to file"""
+        filename = filedialog.asksaveasfilename(
+            defaultextension=".txt",
+            filetypes=[("Text files", "*.txt"), ("All files", "*.*")]
+        )
+        
+        if filename:
+            try:
+                report = self.auditor.get_security_report(hours=24)
+                with open(filename, 'w') as f:
+                    f.write(f"Security Report - {report['report_generated']}\n")
+                    f.write("=" * 50 + "\n\n")
+                    
+                    for event in self.auditor.security_log:
+                        f.write(f"[{event['timestamp']}] {event['severity']} - {event['type']}: {event['details']}\n")
+                
+                messagebox.showinfo("Success", f"Report exported to {filename}")
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to export report: {e}")

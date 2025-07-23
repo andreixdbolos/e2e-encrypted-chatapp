@@ -246,3 +246,101 @@ class CryptoCore:
     def has_group_key(self, group_id: int) -> bool:
         """Check if we have the key for a specific group"""
         return group_id in self.group_keys 
+    
+    def generate_file_key(self) -> bytes:
+        """Generate a new file encryption key"""
+        return secrets.token_bytes(32)
+    
+    def encrypt_file(self, file_data: bytes, file_key: bytes = None) -> Tuple[bytes, bytes, bytes]:
+        """
+        Encrypt file data using ChaCha20-Poly1305
+        Returns: (encrypted_data, nonce, file_key)
+        """
+        if file_key is None:
+            file_key = self.generate_file_key()
+        
+        # Generate random nonce
+        nonce = secrets.token_bytes(12)
+        
+        # Encrypt with ChaCha20-Poly1305
+        cipher = ChaCha20Poly1305(file_key)
+        encrypted_data = cipher.encrypt(nonce, file_data, b'')
+        
+        return encrypted_data, nonce, file_key
+    
+    def decrypt_file(self, encrypted_data: bytes, nonce: bytes, file_key: bytes) -> bytes:
+        """
+        Decrypt file data using ChaCha20-Poly1305
+        Returns: decrypted file data
+        """
+        cipher = ChaCha20Poly1305(file_key)
+        decrypted_data = cipher.decrypt(nonce, encrypted_data, b'')
+        return decrypted_data
+    
+    def encrypt_file_key(self, file_key: bytes, session_key: bytes = None) -> Tuple[bytes, bytes]:
+        """
+        Encrypt file key using session key or root key
+        Returns: (encrypted_key, nonce)
+        """
+        if session_key is None:
+            session_key = self.root_key
+        
+        if not session_key:
+            raise ValueError("No session key available for file key encryption")
+        
+        # Generate nonce for key encryption
+        nonce = secrets.token_bytes(12)
+        
+        # Encrypt file key
+        cipher = ChaCha20Poly1305(session_key)
+        encrypted_key = cipher.encrypt(nonce, file_key, b'')
+        
+        return encrypted_key, nonce
+    
+    def decrypt_file_key(self, encrypted_key: bytes, nonce: bytes, session_key: bytes = None) -> bytes:
+        """
+        Decrypt file key using session key or root key
+        Returns: decrypted file key
+        """
+        if session_key is None:
+            session_key = self.root_key
+        
+        if not session_key:
+            raise ValueError("No session key available for file key decryption")
+        
+        cipher = ChaCha20Poly1305(session_key)
+        file_key = cipher.decrypt(nonce, encrypted_key, b'')
+        return file_key
+    
+    def encrypt_file_key_for_group(self, file_key: bytes, group_id: int) -> Tuple[bytes, bytes]:
+        """
+        Encrypt file key using group key
+        Returns: (encrypted_key, nonce)
+        """
+        if group_id not in self.group_keys:
+            raise ValueError(f"Group key not found for group {group_id}")
+        
+        group_key = self.group_keys[group_id]
+        return self.encrypt_file_key(file_key, group_key)
+    
+    def decrypt_file_key_for_group(self, encrypted_key: bytes, nonce: bytes, group_id: int) -> bytes:
+        """
+        Decrypt file key using group key
+        Returns: decrypted file key
+        """
+        if group_id not in self.group_keys:
+            raise ValueError(f"Group key not found for group {group_id}")
+        
+        group_key = self.group_keys[group_id]
+        return self.decrypt_file_key(encrypted_key, nonce, group_key)
+    
+    def hash_file(self, file_data: bytes) -> str:
+        """Generate SHA-256 hash of file data for integrity verification"""
+        digest = hashes.Hash(hashes.SHA256())
+        digest.update(file_data)
+        return base64.b64encode(digest.finalize()).decode()
+    
+    def verify_file_hash(self, file_data: bytes, expected_hash: str) -> bool:
+        """Verify file integrity using hash"""
+        actual_hash = self.hash_file(file_data)
+        return actual_hash == expected_hash 

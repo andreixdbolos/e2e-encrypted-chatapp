@@ -5,16 +5,20 @@ Flask server with WebSocket support for real-time secure messaging
 
 import os
 import json
-import secrets
 import base64
+import secrets
+import uuid
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_file
 from flask_socketio import SocketIO, emit
 import jwt
+import mimetypes
+from werkzeug.utils import secure_filename
 
 from .crypto_core import CryptoCore
 from .database import Database
+from .security import rate_limiter, security_auditor
 
 
 class SecureChatServer:
@@ -23,10 +27,16 @@ class SecureChatServer:
     def __init__(self, secret_key: str = None):
         self.app = Flask(__name__)
         self.app.config['SECRET_KEY'] = secret_key or secrets.token_hex(32)
+        self.app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024  # 100MB max file size
+        
         self.socketio = SocketIO(self.app, cors_allowed_origins="*")
         self.db = Database()
         self.crypto = CryptoCore()
-        self.active_sessions = {}  # username -> socket_id mapping
+        self.active_sessions = {}  # username -> session_id
+        
+        # Create file storage directory
+        self.file_storage_path = os.path.join(os.path.dirname(__file__), '..', 'file_storage')
+        os.makedirs(self.file_storage_path, exist_ok=True)
         
         self.setup_routes()
         self.setup_websocket_handlers()
@@ -381,6 +391,373 @@ class SecureChatServer:
                 return jsonify({'error': 'Invalid token'}), 401
             except Exception as e:
                 return jsonify({'error': f'Failed to get group messages: {str(e)}'}), 500
+        
+        # File sharing endpoints
+        
+        @self.app.route('/api/files/upload', methods=['POST'])
+        def upload_file():
+            """Upload and encrypt a file"""
+            try:
+                # Verify token
+                token = request.headers.get('Authorization')
+                if not token or not token.startswith('Bearer '):
+                    return jsonify({'error': 'Token required'}), 401
+                
+                token = token.split(' ')[1]
+                decoded = jwt.decode(token, self.app.config['SECRET_KEY'], algorithms=['HS256'])
+                user_id = decoded['user_id']
+                
+                # Check if file was uploaded
+                if 'file' not in request.files:
+                    return jsonify({'error': 'No file uploaded'}), 400
+                
+                uploaded_file = request.files['file']
+                if uploaded_file.filename == '':
+                    return jsonify({'error': 'No file selected'}), 400
+                
+                # Get additional parameters
+                recipient_username = request.form.get('recipient')
+                group_id = request.form.get('group_id', type=int)
+                expires_hours = request.form.get('expires_hours', type=int)
+                
+                # Validate that either recipient or group is specified
+                recipient_id = None
+                if recipient_username:
+                    recipient = self.db.get_user_by_username(recipient_username)
+                    if not recipient:
+                        return jsonify({'error': 'Recipient not found'}), 404
+                    recipient_id = recipient['id']
+                elif group_id:
+                    # Check if user is member of group
+                    if not self.db.is_group_member(group_id, user_id):
+                        return jsonify({'error': 'Access denied: not a group member'}), 403
+                else:
+                    return jsonify({'error': 'Either recipient or group_id must be specified'}), 400
+                
+                # Validate file
+                original_filename = secure_filename(uploaded_file.filename)
+                file_type = mimetypes.guess_type(original_filename)[0] or 'application/octet-stream'
+                
+                # Security checks
+                allowed_extensions = {
+                    '.txt', '.pdf', '.doc', '.docx', '.jpg', '.jpeg', '.png', '.gif',
+                    '.mp4', '.mp3', '.wav', '.zip', '.tar', '.gz', '.py', '.js',
+                    '.html', '.css', '.json', '.xml', '.csv', '.xlsx', '.pptx'
+                }
+                
+                file_ext = os.path.splitext(original_filename)[1].lower()
+                if file_ext not in allowed_extensions:
+                    return jsonify({'error': f'File type {file_ext} not allowed'}), 400
+                
+                # Read file data
+                file_data = uploaded_file.read()
+                file_size = len(file_data)
+                
+                # Check file size (50MB limit)
+                if file_size > 50 * 1024 * 1024:
+                    return jsonify({'error': 'File too large (max 50MB)'}), 400
+                
+                # Generate unique filename for storage
+                stored_filename = f"{uuid.uuid4().hex}_{original_filename}"
+                
+                # Check if file is already encrypted by client
+                client_encrypted = request.form.get('client_encrypted') == 'true'
+                
+                if client_encrypted:
+                    # Client has already encrypted the file and file key
+                    encrypted_key_data = request.form.get('encrypted_key')
+                    file_hash = request.form.get('file_hash')
+                    
+                    if not encrypted_key_data or not file_hash:
+                        return jsonify({'error': 'Missing encryption data for client-encrypted file'}), 400
+                    
+                    # file_data is already encrypted (nonce + encrypted_data)
+                    encrypted_file_data = file_data
+                    
+                    # Store encrypted file to disk
+                    file_path = os.path.join(self.file_storage_path, stored_filename)
+                    with open(file_path, 'wb') as f:
+                        f.write(encrypted_file_data)
+                else:
+                    # Legacy server-side encryption (fallback)
+                    # Encrypt file
+                    encrypted_data, nonce, file_key = self.crypto.encrypt_file(file_data)
+                    
+                    # Encrypt file key based on sharing type
+                    if group_id:
+                        # For group sharing, encrypt with group key
+                        group = self.db.get_group_by_id(group_id)
+                        if not group:
+                            return jsonify({'error': 'Group not found'}), 404
+                        
+                        group_key = base64.b64decode(group['group_key'])
+                        encrypted_file_key, key_nonce = self.crypto.encrypt_file_key(file_key, group_key)
+                    else:
+                        # This would fail for user sharing without session key
+                        return jsonify({'error': 'User file sharing requires client-side encryption'}), 400
+                    
+                    # Combine encrypted key and nonce for storage
+                    encrypted_key_data = base64.b64encode(encrypted_file_key + key_nonce).decode()
+                    
+                    # Generate file hash for integrity
+                    file_hash = self.crypto.hash_file(file_data)
+                    
+                    # Store encrypted file to disk
+                    file_path = os.path.join(self.file_storage_path, stored_filename)
+                    with open(file_path, 'wb') as f:
+                        f.write(nonce + encrypted_data)  # Store nonce + encrypted data
+                
+                # Store file metadata in database
+                file_id = self.db.store_file_metadata(
+                    filename=stored_filename,
+                    original_filename=original_filename,
+                    file_size=file_size,
+                    file_type=file_type,
+                    encrypted_key=encrypted_key_data,
+                    file_hash=file_hash,
+                    uploader_id=user_id,
+                    recipient_id=recipient_id,
+                    group_id=group_id,
+                    expires_hours=expires_hours
+                )
+                
+                if file_id:
+                    # Get file metadata for response
+                    file_metadata = self.db.get_file_metadata(file_id)
+                    
+                    # Notify recipient or group members
+                    if recipient_username and recipient_username in self.active_sessions:
+                        self.socketio.emit('file_shared', {
+                            'file_id': file_id,
+                            'filename': original_filename,
+                            'uploader': decoded['username'],
+                            'file_size': file_size,
+                            'timestamp': datetime.now().isoformat()
+                        }, room=self.active_sessions[recipient_username])
+                    
+                    elif group_id:
+                        # Notify group members
+                        room_name = f"group_{group_id}"
+                        self.socketio.emit('file_shared_group', {
+                            'file_id': file_id,
+                            'filename': original_filename,
+                            'uploader': decoded['username'],
+                            'group_id': group_id,
+                            'file_size': file_size,
+                            'timestamp': datetime.now().isoformat()
+                        }, room=room_name)
+                    
+                    return jsonify({
+                        'message': 'File uploaded successfully',
+                        'file_id': file_id,
+                        'file': file_metadata
+                    }), 201
+                else:
+                    # Clean up file if database storage failed
+                    if os.path.exists(file_path):
+                        os.remove(file_path)
+                    return jsonify({'error': 'Failed to store file metadata'}), 500
+            
+            except jwt.ExpiredSignatureError:
+                return jsonify({'error': 'Token expired'}), 401
+            except jwt.InvalidTokenError:
+                return jsonify({'error': 'Invalid token'}), 401
+            except Exception as e:
+                return jsonify({'error': f'File upload failed: {str(e)}'}), 500
+        
+        @self.app.route('/api/files/<int:file_id>/download', methods=['GET'])
+        def download_file(file_id):
+            """Download and decrypt a file"""
+            try:
+                # Verify token
+                token = request.args.get('token') or request.headers.get('Authorization', '').replace('Bearer ', '')
+                if not token:
+                    return jsonify({'error': 'Token required'}), 401
+                
+                decoded = jwt.decode(token, self.app.config['SECRET_KEY'], algorithms=['HS256'])
+                user_id = decoded['user_id']
+                
+                # Get file metadata
+                file_metadata = self.db.get_file_metadata(file_id)
+                if not file_metadata:
+                    return jsonify({'error': 'File not found'}), 404
+                
+                # Check access permissions
+                if not self.db.can_access_file(file_id, user_id):
+                    return jsonify({'error': 'Access denied'}), 403
+                
+                # Read encrypted file from disk
+                file_path = os.path.join(self.file_storage_path, file_metadata['filename'])
+                if not os.path.exists(file_path):
+                    return jsonify({'error': 'File not found on disk'}), 404
+                
+                with open(file_path, 'rb') as f:
+                    file_content = f.read()
+                
+                # For client-encrypted files, return encrypted data and metadata for client-side decryption
+                # We can detect client-encrypted files by checking if they have specific metadata patterns
+                # or add a flag to the database (for now, assume all user files are client-encrypted)
+                
+                is_client_encrypted = file_metadata['recipient_id'] is not None  # User files are client-encrypted
+                
+                if is_client_encrypted:
+                    # Return encrypted file data and metadata for client-side decryption
+                    encrypted_file_data = base64.b64encode(file_content).decode()
+                    
+                    response_data = {
+                        'encrypted_file_data': encrypted_file_data,
+                        'encrypted_key': file_metadata['encrypted_key'],
+                        'file_hash': file_metadata['file_hash'],
+                        'original_filename': file_metadata['original_filename'],
+                        'file_type': file_metadata['file_type'],
+                        'client_encrypted': True
+                    }
+                    
+                    # Update download count
+                    self.db.increment_download_count(file_id)
+                    
+                    return jsonify(response_data), 200
+                else:
+                    # Legacy server-side decryption for group files
+                    # Extract nonce and encrypted data
+                    nonce = file_content[:12]  # First 12 bytes are nonce
+                    encrypted_data = file_content[12:]  # Rest is encrypted file data
+                    
+                    # Decrypt file key
+                    encrypted_key_data = base64.b64decode(file_metadata['encrypted_key'])
+                    encrypted_file_key = encrypted_key_data[:-12]  # All but last 12 bytes
+                    key_nonce = encrypted_key_data[-12:]  # Last 12 bytes
+                    
+                    # Group file - decrypt with group key
+                    group = self.db.get_group_by_id(file_metadata['group_id'])
+                    group_key = base64.b64decode(group['group_key'])
+                    file_key = self.crypto.decrypt_file_key(encrypted_file_key, key_nonce, group_key)
+                    
+                    # Decrypt file data
+                    decrypted_data = self.crypto.decrypt_file(encrypted_data, nonce, file_key)
+                    
+                    # Verify file integrity
+                    if not self.crypto.verify_file_hash(decrypted_data, file_metadata['file_hash']):
+                        return jsonify({'error': 'File integrity check failed'}), 500
+                    
+                    # Update download count
+                    self.db.increment_download_count(file_id)
+                    
+                    # Create temporary file for download
+                    import tempfile
+                    temp_file = tempfile.NamedTemporaryFile(delete=False)
+                    temp_file.write(decrypted_data)
+                    temp_file.close()
+                    
+                    # Return file as download
+                    return send_file(
+                        temp_file.name,
+                        as_attachment=True,
+                        download_name=file_metadata['original_filename'],
+                        mimetype=file_metadata['file_type']
+                    )
+            
+            except jwt.ExpiredSignatureError:
+                return jsonify({'error': 'Token expired'}), 401
+            except jwt.InvalidTokenError:
+                return jsonify({'error': 'Invalid token'}), 401
+            except Exception as e:
+                return jsonify({'error': f'File download failed: {str(e)}'}), 500
+        
+        @self.app.route('/api/files', methods=['GET'])
+        def list_user_files():
+            """Get files for current user"""
+            try:
+                # Verify token
+                token = request.headers.get('Authorization')
+                if not token or not token.startswith('Bearer '):
+                    return jsonify({'error': 'Token required'}), 401
+                
+                token = token.split(' ')[1]
+                decoded = jwt.decode(token, self.app.config['SECRET_KEY'], algorithms=['HS256'])
+                user_id = decoded['user_id']
+                
+                files = self.db.get_user_files(user_id)
+                return jsonify({'files': files})
+            
+            except jwt.ExpiredSignatureError:
+                return jsonify({'error': 'Token expired'}), 401
+            except jwt.InvalidTokenError:
+                return jsonify({'error': 'Invalid token'}), 401
+            except Exception as e:
+                return jsonify({'error': f'Failed to get files: {str(e)}'}), 500
+        
+        @self.app.route('/api/groups/<int:group_id>/files', methods=['GET'])
+        def list_group_files(group_id):
+            """Get files for a group"""
+            try:
+                # Verify token
+                token = request.headers.get('Authorization')
+                if not token or not token.startswith('Bearer '):
+                    return jsonify({'error': 'Token required'}), 401
+                
+                token = token.split(' ')[1]
+                decoded = jwt.decode(token, self.app.config['SECRET_KEY'], algorithms=['HS256'])
+                user_id = decoded['user_id']
+                
+                # Check if user is member of group
+                if not self.db.is_group_member(group_id, user_id):
+                    return jsonify({'error': 'Access denied: not a group member'}), 403
+                
+                files = self.db.get_group_files(group_id)
+                return jsonify({'files': files})
+            
+            except jwt.ExpiredSignatureError:
+                return jsonify({'error': 'Token expired'}), 401
+            except jwt.InvalidTokenError:
+                return jsonify({'error': 'Invalid token'}), 401
+            except Exception as e:
+                return jsonify({'error': f'Failed to get group files: {str(e)}'}), 500
+        
+        @self.app.route('/api/files/<int:file_id>', methods=['DELETE'])
+        def delete_file(file_id):
+            """Delete a file (only uploader can delete)"""
+            try:
+                # Verify token
+                token = request.headers.get('Authorization')
+                if not token or not token.startswith('Bearer '):
+                    return jsonify({'error': 'Token required'}), 401
+                
+                token = token.split(' ')[1]
+                decoded = jwt.decode(token, self.app.config['SECRET_KEY'], algorithms=['HS256'])
+                user_id = decoded['user_id']
+                
+                # Get file metadata to check ownership
+                file_metadata = self.db.get_file_metadata(file_id)
+                if not file_metadata:
+                    return jsonify({'error': 'File not found'}), 404
+                
+                # Check if user is the uploader
+                if file_metadata['uploader_id'] != user_id:
+                    return jsonify({'error': 'Access denied: only uploader can delete files'}), 403
+                
+                # Deactivate file in database
+                success = self.db.deactivate_file(file_id, user_id)
+                
+                if success:
+                    # Optionally delete physical file from disk
+                    file_path = os.path.join(self.file_storage_path, file_metadata['filename'])
+                    try:
+                        if os.path.exists(file_path):
+                            os.remove(file_path)
+                    except Exception as e:
+                        print(f"Warning: Could not delete physical file: {e}")
+                    
+                    return jsonify({'message': 'File deleted successfully'})
+                else:
+                    return jsonify({'error': 'Failed to delete file'}), 500
+            
+            except jwt.ExpiredSignatureError:
+                return jsonify({'error': 'Token expired'}), 401
+            except jwt.InvalidTokenError:
+                return jsonify({'error': 'Invalid token'}), 401
+            except Exception as e:
+                return jsonify({'error': f'File deletion failed: {str(e)}'}), 500
     
     def setup_websocket_handlers(self):
         """Setup WebSocket event handlers"""
@@ -909,6 +1286,80 @@ class SecureChatServer:
             
             except Exception as e:
                 emit('error', {'message': f'Failed to get group info: {str(e)}'})
+        
+        # File sharing WebSocket handlers
+        
+        @self.socketio.on('get_user_files')
+        def handle_get_user_files(data):
+            """Get files for a user via WebSocket"""
+            try:
+                username = data.get('username')
+                token = data.get('token')
+                
+                if not all([username, token]):
+                    emit('error', {'message': 'Missing required fields'})
+                    return
+                
+                # Verify token
+                try:
+                    decoded = jwt.decode(token, self.app.config['SECRET_KEY'], algorithms=['HS256'])
+                    if decoded['username'] != username:
+                        emit('error', {'message': 'Unauthorized'})
+                        return
+                except (jwt.ExpiredSignatureError, jwt.InvalidTokenError):
+                    emit('error', {'message': 'Invalid or expired token'})
+                    return
+                
+                user = self.db.get_user_by_username(username)
+                if not user:
+                    emit('error', {'message': 'User not found'})
+                    return
+                
+                files = self.db.get_user_files(user['id'])
+                emit('user_files', {
+                    'files': files,
+                    'timestamp': datetime.now().isoformat()
+                })
+            
+            except Exception as e:
+                emit('error', {'message': f'Failed to get user files: {str(e)}'})
+        
+        @self.socketio.on('get_group_files')
+        def handle_get_group_files(data):
+            """Get files for a group via WebSocket"""
+            try:
+                username = data.get('username')
+                group_id = data.get('group_id')
+                token = data.get('token')
+                
+                if not all([username, group_id, token]):
+                    emit('error', {'message': 'Missing required fields'})
+                    return
+                
+                # Verify token
+                try:
+                    decoded = jwt.decode(token, self.app.config['SECRET_KEY'], algorithms=['HS256'])
+                    if decoded['username'] != username:
+                        emit('error', {'message': 'Unauthorized'})
+                        return
+                except (jwt.ExpiredSignatureError, jwt.InvalidTokenError):
+                    emit('error', {'message': 'Invalid or expired token'})
+                    return
+                
+                user = self.db.get_user_by_username(username)
+                if not user or not self.db.is_group_member(group_id, user['id']):
+                    emit('error', {'message': 'Access denied: not a group member'})
+                    return
+                
+                files = self.db.get_group_files(group_id)
+                emit('group_files', {
+                    'group_id': group_id,
+                    'files': files,
+                    'timestamp': datetime.now().isoformat()
+                })
+            
+            except Exception as e:
+                emit('error', {'message': f'Failed to get group files: {str(e)}'})
     
     def run(self, host='127.0.0.1', port=5000, debug=False):
         """Start the server"""
